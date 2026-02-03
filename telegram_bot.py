@@ -50,7 +50,7 @@ HELP_TEXT = (
     "3) If not, use /fixscore or /fixname (or re-upload a clearer photo)\n\n"
     "Commands:\n"
     "- /confirm — confirm your latest pending upload for this week\n"
-    "- /status — show confirmed uploads since Monday\n"
+    "- /status — show team upload status since Monday\n"
     "- /fixscore — correct a score in your pending CSV\n"
     "- /fixname — correct a player name in your pending CSV\n"
     "- /help — show this help\n\n"
@@ -116,12 +116,12 @@ def _week_start(dt: datetime) -> datetime:
     return d0 - timedelta(days=d0.weekday())
 
 
-def _expected_captains() -> list[str]:
-    # comma-separated telegram usernames, no @, e.g. "edmay,randy,dave"
-    raw = (os.getenv("CAPTAINS") or "").strip()
-    if not raw:
-        return []
-    return [x.strip().lstrip("@").lower() for x in raw.split(",") if x.strip()]
+def _teams_count() -> int:
+    # total number of teams in the league
+    try:
+        return int((os.getenv("TEAMS_COUNT") or "14").strip())
+    except Exception:
+        return 14
 
 
 def _user_label(update: Update) -> str:
@@ -172,7 +172,7 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         rows = con.execute(
             """
-            SELECT created_at, username, first_name, last_name, id
+            SELECT created_at, id, home_team, visiting_team
             FROM uploads
             WHERE week_start = ? AND confirmed_at IS NULL
             ORDER BY id DESC
@@ -188,54 +188,60 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     lines = [f"Pending uploads for week starting {ws_s}:"]
-    for created_at, username, first_name, last_name, upload_id in rows:
-        who = f"@{username}" if username else " ".join([x for x in [first_name, last_name] if x])
-        lines.append(f"- #{upload_id} {created_at}: {who}")
+    for created_at, upload_id, home_team, visiting_team in rows:
+        t = ""
+        if home_team is not None and visiting_team is not None:
+            t = f" Team{home_team}vTeam{visiting_team}"
+        lines.append(f"- #{upload_id} {created_at}:{t}")
 
     await update.message.reply_text("\n".join(lines))
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Team-based weekly status.
+
+    For v1, we treat the upload as belonging to the HOME team on the sheet.
+    Week resets on Monday.
+    """
+
     now = datetime.now()
     ws_s = _week_start(now).date().isoformat()
+    n_teams = _teams_count()
+
+    # Build team -> status (None/Pending/Confirmed)
+    team_status: Dict[int, str] = {i: "None" for i in range(1, n_teams + 1)}
 
     con = _db()
     try:
-        uploads = con.execute(
+        rows = con.execute(
             """
-            SELECT DISTINCT COALESCE(LOWER(username), '') AS u
+            SELECT home_team, confirmed_at
             FROM uploads
-            WHERE week_start = ? AND confirmed_at IS NOT NULL
+            WHERE week_start = ? AND home_team IS NOT NULL
+            ORDER BY id ASC
             """,
             (ws_s,),
         ).fetchall()
     finally:
         con.close()
 
-    uploaded_usernames = sorted([u for (u,) in uploads if u])
+    for home_team, confirmed_at in rows:
+        if home_team is None:
+            continue
+        t = int(home_team)
+        if t < 1 or t > n_teams:
+            continue
 
-    lines = [f"Status (CONFIRMED) for week starting {ws_s}:"]
-    if uploaded_usernames:
-        lines.append("Confirmed uploads:")
-        lines.extend([f"- @{u}" for u in uploaded_usernames])
-    else:
-        lines.append("No confirmed uploads yet this week.")
-
-    expected = _expected_captains()
-    if expected:
-        missing = [u for u in expected if u not in uploaded_usernames]
-        lines.append("")
-        lines.append("Expected captains:")
-        lines.extend([f"- @{u}" for u in expected])
-        lines.append("")
-        lines.append("Missing confirmed uploads:")
-        if missing:
-            lines.extend([f"- @{u}" for u in missing])
+        # Confirmed beats Pending beats None
+        if confirmed_at:
+            team_status[t] = "Confirmed"
         else:
-            lines.append("- (none)")
-    else:
-        lines.append("")
-        lines.append("Tip: set CAPTAINS in .env to track missing uploads.")
+            if team_status[t] != "Confirmed":
+                team_status[t] = "Pending"
+
+    lines = [f"Team upload status for week starting {ws_s}:"]
+    for t in range(1, n_teams + 1):
+        lines.append(f"- Team {t}: {team_status[t]}")
 
     await update.message.reply_text("\n".join(lines))
 

@@ -43,5 +43,11 @@ python3 telegram_bot.py
 4) In Telegram, send the bot a scoresheet photo. It replies with a CSV.
 
 Bot commands:
-- `/status` — who has uploaded since Monday (uses `CAPTAINS` if set)
-- `/recent` — last 10 uploads
+- `/status` — team upload status since Monday (None/Pending/Confirmed)
+- `/confirm` — confirm your pending upload
+- `/fixname` — fix a player name by player number
+- `/fixscore` — fix a score by player number + game number
+- `/help` — show help text + examples
+
+League config:
+- `.env`: set `TEAMS_COUNT=14` (or whatever)
