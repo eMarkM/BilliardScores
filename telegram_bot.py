@@ -21,12 +21,14 @@ Run:
 
 from __future__ import annotations
 
+import csv
 import os
+import shlex
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -45,12 +47,24 @@ HELP_TEXT = (
     "Workflow:\n"
     "1) Send photo → I reply with a CSV and mark it PENDING\n"
     "2) If it looks good, reply /confirm to lock it in\n"
-    "3) If not, fix issues and re-upload a clearer photo\n\n"
+    "3) If not, use /fixscore or /fixname (or re-upload a clearer photo)\n\n"
     "Commands:\n"
     "- /confirm — confirm your latest pending upload for this week\n"
     "- /status — show confirmed uploads since Monday\n"
+    "- /fixscore — correct a score in your pending CSV\n"
+    "- /fixname — correct a player name in your pending CSV\n"
     "- /pending — show pending uploads since Monday\n"
-    "- /recent — show recent uploads\n\n"
+    "- /recent — show recent uploads\n"
+    "- /help — show this help\n\n"
+    "Fix score format:\n"
+    "  /fixscore <home|visiting> <player> <game1..game6|total> <value>\n"
+    "Examples:\n"
+    "  /fixscore visiting Ed game2 4\n"
+    "  /fixscore home Sue game4 5\n\n"
+    "Fix name format:\n"
+    "  /fixname <home|visiting> <old_name> <new_name>\n"
+    "Example:\n"
+    "  /fixname visiting \"3rd A H\" Anthony\n\n"
     "Tips for best results:\n"
     "- Fill the frame with the sheet\n"
     "- Avoid shadows/glare\n"
@@ -114,8 +128,12 @@ def _user_label(update: Update) -> str:
     return name or str(u.id)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(HELP_TEXT)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await help_cmd(update, context)
 
 
 async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -216,6 +234,49 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
+def _load_csv_rows(csv_path: Path) -> List[Dict[str, Any]]:
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        r = csv.DictReader(f)
+        rows = [dict(row) for row in r]
+    # normalize ints
+    for row in rows:
+        for k in list(row.keys()):
+            if k.startswith("game") or k == "total":
+                row[k] = int(row[k])
+    return rows
+
+
+def _write_csv_rows(csv_path: Path, rows: List[Dict[str, Any]]) -> None:
+    fields = ["side", "player", "game1", "game2", "game3", "game4", "game5", "game6", "total"]
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+
+
+def _warnings_for_rows(rows: List[Dict[str, Any]]) -> str:
+    warns: List[str] = []
+    for row in rows:
+        s = sum(int(row[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
+        if s != int(row["total"]):
+            warns.append(f"Total mismatch for {row['side']}:{row['player']}: games sum={s} total={row['total']}")
+    return "\n".join(warns)
+
+
+def _latest_pending_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, user_id: int):
+    return con.execute(
+        """
+        SELECT id, image_path, csv_path
+        FROM uploads
+        WHERE week_start = ? AND chat_id = ? AND user_id = ? AND confirmed_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (ws_s, chat_id, user_id),
+    ).fetchone()
+
+
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     if not msg:
@@ -258,6 +319,167 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await msg.reply_text(
         f"Confirmed upload #{upload_id} from {created_at} ({Path(image_path).name}). Thanks."
     )
+
+
+async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg:
+        return
+
+    u = update.effective_user
+    c = update.effective_chat
+    if not u or not c:
+        await msg.reply_text("Can’t determine user/chat.")
+        return
+
+    # Parse with quotes support
+    parts = shlex.split(msg.text or "")
+    if len(parts) != 5:
+        await msg.reply_text(
+            "Usage: /fixscore <home|visiting> <player> <game1..game6|total> <value>\n"
+            "Example: /fixscore visiting Ed game2 4"
+        )
+        return
+
+    _, side, player, field, value_s = parts
+    side = side.lower()
+    field = field.lower()
+
+    if side not in ("home", "visiting"):
+        await msg.reply_text("Side must be 'home' or 'visiting'.")
+        return
+
+    if field not in {"game1", "game2", "game3", "game4", "game5", "game6", "total"}:
+        await msg.reply_text("Field must be game1..game6 or total.")
+        return
+
+    try:
+        value = int(value_s)
+    except ValueError:
+        await msg.reply_text("Value must be an integer.")
+        return
+
+    if field.startswith("game") and not (0 <= value <= 10):
+        await msg.reply_text("Game values must be between 0 and 10.")
+        return
+
+    ws_s = _week_start(datetime.now()).date().isoformat()
+    con = _db()
+    try:
+        pending_row = _latest_pending_upload(con, ws_s, c.id, u.id)
+        if not pending_row:
+            await msg.reply_text("No pending upload found to fix (for this week).")
+            return
+
+        upload_id, image_path, csv_path = pending_row
+        if not csv_path:
+            await msg.reply_text("Pending upload has no CSV on record.")
+            return
+
+        csv_p = Path(csv_path)
+        rows = _load_csv_rows(csv_p)
+
+        matches = [r for r in rows if r["side"].lower() == side and r["player"] == player]
+        if not matches:
+            await msg.reply_text(f"Couldn't find player '{player}' on side '{side}' in the pending CSV.")
+            return
+
+        # Update all matches (should be 1)
+        for r in matches:
+            r[field] = value
+
+        warns = _warnings_for_rows(rows)
+        _write_csv_rows(csv_p, rows)
+
+        con.execute(
+            "UPDATE uploads SET warnings = ? WHERE id = ?",
+            (warns or None, upload_id),
+        )
+        con.commit()
+
+    finally:
+        con.close()
+
+    caption = (
+        f"Updated CSV (PENDING upload #{upload_id}).\n"
+        "Run /confirm when it looks good."
+    )
+    if warns:
+        caption += f"\n\nWarnings:\n{warns}"
+
+    await msg.reply_document(document=csv_p.open("rb"), filename=csv_p.name, caption=caption)
+
+
+async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg:
+        return
+
+    u = update.effective_user
+    c = update.effective_chat
+    if not u or not c:
+        await msg.reply_text("Can’t determine user/chat.")
+        return
+
+    parts = shlex.split(msg.text or "")
+    if len(parts) != 4:
+        await msg.reply_text(
+            "Usage: /fixname <home|visiting> <old_name> <new_name>\n"
+            "Example: /fixname visiting \"3rd A H\" Anthony"
+        )
+        return
+
+    _, side, old_name, new_name = parts
+    side = side.lower()
+
+    if side not in ("home", "visiting"):
+        await msg.reply_text("Side must be 'home' or 'visiting'.")
+        return
+
+    ws_s = _week_start(datetime.now()).date().isoformat()
+    con = _db()
+    try:
+        pending_row = _latest_pending_upload(con, ws_s, c.id, u.id)
+        if not pending_row:
+            await msg.reply_text("No pending upload found to fix (for this week).")
+            return
+
+        upload_id, image_path, csv_path = pending_row
+        if not csv_path:
+            await msg.reply_text("Pending upload has no CSV on record.")
+            return
+
+        csv_p = Path(csv_path)
+        rows = _load_csv_rows(csv_p)
+
+        matches = [r for r in rows if r["side"].lower() == side and r["player"] == old_name]
+        if not matches:
+            await msg.reply_text(f"Couldn't find player '{old_name}' on side '{side}' in the pending CSV.")
+            return
+
+        for r in matches:
+            r["player"] = new_name
+
+        warns = _warnings_for_rows(rows)
+        _write_csv_rows(csv_p, rows)
+
+        con.execute(
+            "UPDATE uploads SET warnings = ? WHERE id = ?",
+            (warns or None, upload_id),
+        )
+        con.commit()
+
+    finally:
+        con.close()
+
+    caption = (
+        f"Updated CSV (PENDING upload #{upload_id}).\n"
+        "Run /confirm when it looks good."
+    )
+    if warns:
+        caption += f"\n\nWarnings:\n{warns}"
+
+    await msg.reply_document(document=csv_p.open("rb"), filename=csv_p.name, caption=caption)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -363,8 +585,11 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
-    app.add_handler(CommandHandler(["start", "help"], start))
+    app.add_handler(CommandHandler(["start"], start))
+    app.add_handler(CommandHandler(["help"], help_cmd))
     app.add_handler(CommandHandler(["confirm"], confirm))
+    app.add_handler(CommandHandler(["fixscore"], fixscore))
+    app.add_handler(CommandHandler(["fixname"], fixname))
     app.add_handler(CommandHandler(["status"], status))
     app.add_handler(CommandHandler(["pending"], pending))
     app.add_handler(CommandHandler(["recent"], recent))
