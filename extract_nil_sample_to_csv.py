@@ -43,10 +43,8 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Minimal, demo-friendly schema
 FIELDS = [
-    "sheet_image",
     "side",
     "player",
-    "rating",
     "game1",
     "game2",
     "game3",
@@ -63,7 +61,6 @@ This is a sports scoresheet (not an ID document). Do NOT identify real people be
 
 Read the row left-to-right and output STRICT JSON with keys:
 - player: string (copy the handwritten name as written)
-- rating: number or null
 - game1..game6: integers 0-10 (the six GAME columns, in order)
 - total: integer
 
@@ -130,7 +127,6 @@ ROW_SCHEMA = {
         "additionalProperties": False,
         "properties": {
             "player": {"type": "string"},
-            "rating": {"type": ["number", "null"]},
             "game1": {"type": "integer"},
             "game2": {"type": "integer"},
             "game3": {"type": "integer"},
@@ -141,7 +137,6 @@ ROW_SCHEMA = {
         },
         "required": [
             "player",
-            "rating",
             "game1",
             "game2",
             "game3",
@@ -253,11 +248,10 @@ def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dic
         if not isinstance(r, dict):
             raise RuntimeError(f"Row {i} is not an object: {r!r}")
 
-        out: Dict[str, Any] = {"sheet_image": image_name}
+        out: Dict[str, Any] = {}
         for k in [
             "side",
             "player",
-            "rating",
             "game1",
             "game2",
             "game3",
@@ -272,16 +266,6 @@ def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dic
 
         out["side"] = str(out["side"]).strip().lower()
         out["player"] = str(out["player"]).strip()
-
-        if out["rating"] is None or out["rating"] == "":
-            out["rating"] = ""
-        else:
-            rating = float(out["rating"])
-            # Heuristic: sometimes 8.04 is read as 804. Keep dividing by 10 until plausible.
-            if rating > 10:
-                while rating > 10:
-                    rating /= 10
-            out["rating"] = rating
 
         for g in ["game1", "game2", "game3", "game4", "game5", "game6", "total"]:
             out[g] = int(out[g])
@@ -309,14 +293,6 @@ def validate_rows(rows: List[Dict[str, Any]]) -> List[str]:
             v = int(r[g])
             if v < 0 or v > 10:
                 warnings.append(f"Out-of-range {g}={v} for {r.get('side')}:{r.get('player')}")
-
-        if r.get("rating") not in ("", None):
-            try:
-                rv = float(r["rating"])
-                if rv < 0 or rv > 10:
-                    warnings.append(f"Suspicious rating={rv} for {r.get('side')}:{r.get('player')}")
-            except Exception:
-                warnings.append(f"Non-numeric rating for {r.get('side')}:{r.get('player')}")
 
         s = sum(int(r[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
         if s != int(r["total"]):

@@ -343,6 +343,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         con.close()
 
     caption = (
+        f"Processed photo: {image_path.name}\n"
         f"Parsed CSV (PENDING upload #{upload_id}).\n"
         "Please /confirm if this is good; otherwise fix issues and re-upload."
     )
