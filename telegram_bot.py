@@ -281,6 +281,70 @@ def _warnings_for_rows(rows: List[Dict[str, Any]]) -> str:
     return "\n".join(warns)
 
 
+def _plausibility_check(
+    rows: List[Dict[str, Any]],
+    teams_count: int,
+    home_team: Optional[int],
+    visiting_team: Optional[int],
+) -> Tuple[bool, List[str]]:
+    """Basic guard rails to avoid accepting random photos.
+
+    We don't need perfection—just catch obvious non-scoresheets.
+    """
+
+    problems: List[str] = []
+
+    if len(rows) != 6:
+        problems.append(f"Expected 6 player rows, got {len(rows)}")
+        return False, problems
+
+    # Team numbers should be present and in-range for a real sheet.
+    if home_team is None or visiting_team is None:
+        problems.append("Could not read Home/Visiting team numbers")
+    else:
+        if not (1 <= home_team <= teams_count):
+            problems.append(f"Home team {home_team} out of range 1..{teams_count}")
+        if not (1 <= visiting_team <= teams_count):
+            problems.append(f"Visiting team {visiting_team} out of range 1..{teams_count}")
+        if home_team == visiting_team:
+            problems.append("Home and Visiting team numbers are identical")
+
+    # Names should look like names: at least 4 non-trivial strings.
+    name_ok = 0
+    for r in rows:
+        name = (r.get("player") or "").strip()
+        if len(name) >= 2 and any(c.isalpha() for c in name):
+            name_ok += 1
+    if name_ok < 4:
+        problems.append(f"Too few readable player names ({name_ok}/6)")
+
+    # Totals should match sum of games for most rows.
+    mismatch = 0
+    for r in rows:
+        s = sum(int(r[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
+        if s != int(r["total"]):
+            mismatch += 1
+    if mismatch > 2:
+        problems.append(f"Too many total mismatches ({mismatch}/6)")
+
+    # Games should be in range and not all identical junk.
+    distinct_scores = set()
+    out_of_range = 0
+    for r in rows:
+        for g in ["game1", "game2", "game3", "game4", "game5", "game6"]:
+            v = int(r[g])
+            if v < 0 or v > 10:
+                out_of_range += 1
+            distinct_scores.add(v)
+    if out_of_range:
+        problems.append(f"Found {out_of_range} out-of-range game values")
+    if len(distinct_scores) <= 1:
+        problems.append("All game values appear identical (likely not a scoresheet)")
+
+    ok = len(problems) == 0
+    return ok, problems
+
+
 def _latest_pending_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, user_id: int):
     return con.execute(
         """
@@ -595,8 +659,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     out_csv = HERE / "out" / f"{image_path.stem}.csv"
+    if not out_csv.exists():
+        await msg.reply_text("Extraction ran, but I couldn’t find the CSV output file.")
+        return
 
-    # Record upload (PENDING until /confirm) — only after successful extraction
+    # Basic plausibility checks so random photos don't get a PENDING upload.
+    try:
+        rows = _load_csv_rows(out_csv)
+    except Exception:
+        await msg.reply_text(
+            "Sorry — I got a CSV back but couldn’t read it. Please re-upload the scoresheet photo."
+        )
+        return
+
+    teams_count = _teams_count()
+    ok, problems = _plausibility_check(rows, teams_count, team_home, team_vis)
+    if not ok:
+        details = "\n".join([f"- {p}" for p in problems])
+        await msg.reply_text(
+            "That doesn’t look like a NIL scoresheet upload, so I’m not going to accept it.\n\n"
+            "If this *was* a scoresheet, try again with a clearer straight-on photo (less glare).\n\n"
+            f"Checks that failed:\n{details}"
+        )
+        return
+
+    # Record upload (PENDING until /confirm) — only after successful extraction + plausibility.
     upload_id = None
     con = _db()
     try:
@@ -622,7 +709,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 (u.first_name or None) if u else None,
                 (u.last_name or None) if u else None,
                 str(image_path),
-                str(out_csv) if out_csv.exists() else None,
+                str(out_csv),
                 warn_text or None,
                 None,
                 team_home,
@@ -647,10 +734,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if warn_text:
         caption += f"\n\nWarnings:\n{warn_text}"
 
-    if out_csv.exists():
-        await msg.reply_document(document=out_csv.open("rb"), filename=out_csv.name, caption=caption)
-    else:
-        await msg.reply_text("Extraction ran, but I couldn’t find the CSV output file.")
+    await msg.reply_document(document=out_csv.open("rb"), filename=out_csv.name, caption=caption)
 
 
 def main() -> None:
