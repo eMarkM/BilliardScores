@@ -88,17 +88,24 @@ def _db() -> sqlite3.Connection:
           image_path TEXT NOT NULL,
           csv_path TEXT,
           warnings TEXT,
-          confirmed_at TEXT
+          confirmed_at TEXT,
+          home_team INTEGER,
+          visiting_team INTEGER
         )
         """
     )
 
     # Lightweight migrations for older DBs
-    try:
-        con.execute("ALTER TABLE uploads ADD COLUMN confirmed_at TEXT")
-        con.commit()
-    except sqlite3.OperationalError:
-        pass
+    for stmt in [
+        "ALTER TABLE uploads ADD COLUMN confirmed_at TEXT",
+        "ALTER TABLE uploads ADD COLUMN home_team INTEGER",
+        "ALTER TABLE uploads ADD COLUMN visiting_team INTEGER",
+    ]:
+        try:
+            con.execute(stmt)
+            con.commit()
+        except sqlite3.OperationalError:
+            pass
 
     return con
 
@@ -516,10 +523,42 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     file = await context.bot.get_file(photo.file_id)
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    image_path = UPLOADS_DIR / f"scoresheet-{ts}.jpg"
-    await file.download_to_drive(custom_path=str(image_path))
+    image_path_tmp = UPLOADS_DIR / f"scoresheet-{ts}.jpg"
+    await file.download_to_drive(custom_path=str(image_path_tmp))
 
-    # Run extractor script
+    # First extract team numbers so we can rename the file.
+    team_home = None
+    team_vis = None
+    try:
+        cmd_teams = [
+            "python3",
+            str(HERE / "extract_nil_sample_to_csv.py"),
+            "--teams-only",
+            "--image",
+            str(image_path_tmp),
+        ]
+        proc_teams = subprocess.run(cmd_teams, cwd=str(HERE), capture_output=True, text=True)
+        if proc_teams.returncode == 0:
+            import json as _json
+
+            teams = _json.loads((proc_teams.stdout or "").strip() or "{}")
+            team_home = int(teams.get("home_team")) if "home_team" in teams else None
+            team_vis = int(teams.get("visiting_team")) if "visiting_team" in teams else None
+    except Exception:
+        # If team extraction fails, continue with the tmp filename.
+        team_home = None
+        team_vis = None
+
+    if team_home is not None and team_vis is not None:
+        image_path = UPLOADS_DIR / f"scoresheet-{ts}-Team{team_home}vTeam{team_vis}.jpg"
+        try:
+            image_path_tmp.rename(image_path)
+        except Exception:
+            image_path = image_path_tmp
+    else:
+        image_path = image_path_tmp
+
+    # Run extractor script (full)
     cmd = [
         "python3",
         str(HERE / "extract_nil_sample_to_csv.py"),
@@ -563,8 +602,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             INSERT INTO uploads (
               created_at, week_start, chat_id, chat_title,
               user_id, username, first_name, last_name,
-              image_path, csv_path, warnings, confirmed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              image_path, csv_path, warnings, confirmed_at,
+              home_team, visiting_team
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().isoformat(timespec="seconds"),
@@ -579,6 +619,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 str(out_csv) if out_csv.exists() else None,
                 warn_text or None,
                 None,
+                team_home,
+                team_vis,
             ),
         )
         upload_id = cur.lastrowid
@@ -586,8 +628,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     finally:
         con.close()
 
+    teams_line = ""
+    if team_home is not None and team_vis is not None:
+        teams_line = f"Teams: Home Team {team_home} vs Visiting Team {team_vis}\n"
+
     caption = (
         f"Processed photo: {image_path.name}\n"
+        f"{teams_line}"
         f"Parsed CSV (PENDING upload #{upload_id}).\n"
         "Please /confirm if this is good; otherwise fix issues and re-upload."
     )

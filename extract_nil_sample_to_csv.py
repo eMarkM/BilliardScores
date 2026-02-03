@@ -75,6 +75,11 @@ Rules:
 # to an upright/landscape orientation (width > height). We scale these to
 # whatever resolution the rotated image is.
 BASE_W, BASE_H = 1280, 960
+
+# Team numbers in header (tight-ish boxes around the handwritten digits)
+HOME_TEAM_BOX_BASE: Tuple[int, int, int, int] = (340, 105, 370, 140)
+VISITING_TEAM_BOX_BASE: Tuple[int, int, int, int] = (790, 105, 820, 140)
+
 HOME_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
     (0, 232, 560, 295),
     (0, 380, 560, 445),
@@ -121,6 +126,19 @@ class VisionRefusal(RuntimeError):
     pass
 
 
+TEAM_SCHEMA = {
+    "name": "nil_scoresheet_teams",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "home_team": {"type": "integer"},
+            "visiting_team": {"type": "integer"},
+        },
+        "required": ["home_team", "visiting_team"],
+    },
+}
+
 ROW_SCHEMA = {
     "name": "nil_scoresheet_row",
     "schema": {
@@ -150,7 +168,7 @@ ROW_SCHEMA = {
 }
 
 
-def openai_vision_json(prompt: str, data_url: str, model: str) -> Any:
+def openai_vision_json(prompt: str, data_url: str, model: str, schema: dict) -> Any:
     """Call the vision model and force strict JSON.
 
     We use response_format=json_schema so the model can't reply with prose.
@@ -168,7 +186,7 @@ def openai_vision_json(prompt: str, data_url: str, model: str) -> Any:
 
     resp = client.chat.completions.create(
         model=model,
-        response_format={"type": "json_schema", "json_schema": ROW_SCHEMA},
+        response_format={"type": "json_schema", "json_schema": schema},
         messages=[
             {
                 "role": "system",
@@ -218,6 +236,43 @@ def _load_upright(image_path: Path) -> Image.Image:
     return img
 
 
+def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
+    img = _load_upright(image_path)
+    w, h = img.size
+
+    # Crop a slightly padded region around each digit and ask the model for the integer.
+    def padded(box_base: Tuple[int, int, int, int], pad: int = 20) -> Tuple[int, int, int, int]:
+        x1, y1, x2, y2 = _scale_box(box_base, w, h)
+        return (max(0, x1 - pad), max(0, y1 - pad), min(w, x2 + pad), min(h, y2 + pad))
+
+    home_crop = _img_crop_bytes(img, padded(HOME_TEAM_BOX_BASE))
+    visiting_crop = _img_crop_bytes(img, padded(VISITING_TEAM_BOX_BASE))
+
+    prompt = (
+        "Read the handwritten team number in this crop. "
+        "Return strict JSON: {\"home_team\": <int>, \"visiting_team\": <int>}. "
+        "If only one digit is visible, still fill both fields with your best guess."
+    )
+
+    # Combine both crops by placing them side-by-side into one image to reduce calls.
+    import io
+    from PIL import Image as PILImage
+
+    im1 = PILImage.open(io.BytesIO(home_crop))
+    im2 = PILImage.open(io.BytesIO(visiting_crop))
+    combo = PILImage.new("RGB", (im1.width + im2.width, max(im1.height, im2.height)), (255, 255, 255))
+    combo.paste(im1, (0, 0))
+    combo.paste(im2, (im1.width, 0))
+    bio = io.BytesIO()
+    combo.save(bio, format="PNG")
+    data_url = _b64_data_url_bytes(bio.getvalue(), "image/png")
+
+    obj = openai_vision_json(prompt, data_url, model=model, schema=TEAM_SCHEMA)
+    if not isinstance(obj, dict):
+        raise RuntimeError(f"Expected teams object, got: {type(obj)}")
+    return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
+
+
 def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any]]:
     img = _load_upright(image_path)
     w, h = img.size
@@ -229,7 +284,7 @@ def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any
             box = _scale_box(b, w, h)
             crop_bytes = _img_crop_bytes(img, box)
             data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-            obj = openai_vision_json(ROW_PROMPT, data_url, model=model)
+            obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
             if not isinstance(obj, dict):
                 raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
             obj = dict(obj)
@@ -328,6 +383,11 @@ def main(argv: List[str] | None = None) -> int:
         default=os.getenv("BILLIARDSCORES_MODEL", "gpt-4o"),
         help="OpenAI model to use (default: gpt-4o)",
     )
+    ap.add_argument(
+        "--teams-only",
+        action="store_true",
+        help="Only extract home_team and visiting_team and print JSON to stdout",
+    )
     args = ap.parse_args(argv)
 
     image_path = Path(args.image).expanduser().resolve()
@@ -336,6 +396,11 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     try:
+        if args.teams_only:
+            teams = extract_team_numbers(image_path, model=args.model)
+            print(json.dumps(teams))
+            return 0
+
         extracted = extract_rows_by_cropping(image_path, model=args.model)
         rows = normalize_rows(image_path.name, extracted)
         warnings = validate_rows(rows)
