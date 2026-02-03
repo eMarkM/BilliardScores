@@ -261,8 +261,10 @@ def _warnings_for_rows(rows: List[Dict[str, Any]]) -> str:
     for row in rows:
         s = sum(int(row[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
         if s != int(row["total"]):
-            pn = row.get('player_num', '?')
-        warns.append(f"Total mismatch for P{pn} {row['side']}:{row['player']}: games sum={s} total={row['total']}")
+            pn = row.get("player_num", "?")
+            warns.append(
+                f"Total mismatch for P{pn} {row['side']}:{row['player']}: games sum={s} total={row['total']}"
+            )
     return "\n".join(warns)
 
 
