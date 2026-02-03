@@ -64,7 +64,7 @@ HELP_TEXT = (
     "Fix name format:\n"
     "  /fixname <home|visiting> <old_name> <new_name>\n"
     "Example:\n"
-    "  /fixname visiting \"3rd A H\" Anthony\n\n"
+    "  /fixname visiting \"Jam\" Joe\n\n"
     "Tips for best results:\n"
     "- Fill the frame with the sheet\n"
     "- Avoid shadows/glare\n"
