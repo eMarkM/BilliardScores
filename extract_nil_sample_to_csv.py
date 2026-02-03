@@ -43,6 +43,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Minimal, demo-friendly schema
 FIELDS = [
+    "player_num",
     "side",
     "player",
     "game1",
@@ -223,7 +224,7 @@ def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any
 
     rows: List[Dict[str, Any]] = []
 
-    def do_side(side: str, boxes_base: List[Tuple[int, int, int, int]]):
+    def do_side(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
         for idx, b in enumerate(boxes_base, start=1):
             box = _scale_box(b, w, h)
             crop_bytes = _img_crop_bytes(img, box)
@@ -233,10 +234,12 @@ def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any
                 raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
             obj = dict(obj)
             obj["side"] = side
+            # Global player numbers: home=1..3, visiting=4..6
+            obj["player_num"] = offset + idx
             rows.append(obj)
 
-    do_side("home", HOME_ROW_BOXES_BASE)
-    do_side("visiting", VISITING_ROW_BOXES_BASE)
+    do_side("home", HOME_ROW_BOXES_BASE, offset=0)
+    do_side("visiting", VISITING_ROW_BOXES_BASE, offset=3)
 
     return rows
 
@@ -250,6 +253,7 @@ def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dic
 
         out: Dict[str, Any] = {}
         for k in [
+            "player_num",
             "side",
             "player",
             "game1",
@@ -264,6 +268,7 @@ def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dic
                 raise RuntimeError(f"Row {i} missing key '{k}'. Got keys: {sorted(r.keys())}")
             out[k] = r[k]
 
+        out["player_num"] = int(out["player_num"])
         out["side"] = str(out["side"]).strip().lower()
         out["player"] = str(out["player"]).strip()
 
@@ -297,7 +302,7 @@ def validate_rows(rows: List[Dict[str, Any]]) -> List[str]:
         s = sum(int(r[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
         if s != int(r["total"]):
             warnings.append(
-                f"Total mismatch for {r.get('side')}:{r.get('player')}: games sum={s} total={r.get('total')}"
+                f"Total mismatch for P{r.get('player_num')} {r.get('side')}:{r.get('player')}: games sum={s} total={r.get('total')}"
             )
 
     return warnings

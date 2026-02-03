@@ -53,18 +53,17 @@ HELP_TEXT = (
     "- /status — show confirmed uploads since Monday\n"
     "- /fixscore — correct a score in your pending CSV\n"
     "- /fixname — correct a player name in your pending CSV\n"
-    "- /pending — show pending uploads since Monday\n"
-    "- /recent — show recent uploads\n"
     "- /help — show this help\n\n"
+    "Your CSV includes a player number (P1..P6). Use that for fixes.\n\n"
     "Fix score format:\n"
-    "  /fixscore <home|visiting> <player> <game1..game6|total> <value>\n"
+    "  /fixscore <player_num> <game_num> <value>\n"
     "Examples:\n"
-    "  /fixscore visiting Ed game2 4\n"
-    "  /fixscore home Sue game4 5\n\n"
+    "  /fixscore 4 2 4     (player 4, game 2 → 4)\n"
+    "  /fixscore 3 4 5     (player 3, game 4 → 5)\n\n"
     "Fix name format:\n"
-    "  /fixname <home|visiting> <old_name> <new_name>\n"
+    "  /fixname <player_num> <new_name>\n"
     "Example:\n"
-    "  /fixname visiting \"Jam\" Joe\n\n"
+    "  /fixname 6 Anthony\n\n"
     "Tips for best results:\n"
     "- Fill the frame with the sheet\n"
     "- Avoid shadows/glare\n"
@@ -240,6 +239,8 @@ def _load_csv_rows(csv_path: Path) -> List[Dict[str, Any]]:
         rows = [dict(row) for row in r]
     # normalize ints
     for row in rows:
+        if "player_num" in row:
+            row["player_num"] = int(row["player_num"])
         for k in list(row.keys()):
             if k.startswith("game") or k == "total":
                 row[k] = int(row[k])
@@ -247,7 +248,7 @@ def _load_csv_rows(csv_path: Path) -> List[Dict[str, Any]]:
 
 
 def _write_csv_rows(csv_path: Path, rows: List[Dict[str, Any]]) -> None:
-    fields = ["side", "player", "game1", "game2", "game3", "game4", "game5", "game6", "total"]
+    fields = ["player_num", "side", "player", "game1", "game2", "game3", "game4", "game5", "game6", "total"]
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -260,7 +261,8 @@ def _warnings_for_rows(rows: List[Dict[str, Any]]) -> str:
     for row in rows:
         s = sum(int(row[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
         if s != int(row["total"]):
-            warns.append(f"Total mismatch for {row['side']}:{row['player']}: games sum={s} total={row['total']}")
+            pn = row.get('player_num', '?')
+        warns.append(f"Total mismatch for P{pn} {row['side']}:{row['player']}: games sum={s} total={row['total']}")
     return "\n".join(warns)
 
 
@@ -334,33 +336,46 @@ async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Parse with quotes support
     parts = shlex.split(msg.text or "")
-    if len(parts) != 5:
+    if len(parts) != 4:
         await msg.reply_text(
-            "Usage: /fixscore <home|visiting> <player> <game1..game6|total> <value>\n"
-            "Example: /fixscore visiting Ed game2 4"
+            "Usage: /fixscore <player_num> <game_num> <value>\n"
+            "Example: /fixscore 4 2 4"
         )
         return
 
-    _, side, player, field, value_s = parts
-    side = side.lower()
-    field = field.lower()
+    _, player_num_s, game_num_s, value_s = parts
 
-    if side not in ("home", "visiting"):
-        await msg.reply_text("Side must be 'home' or 'visiting'.")
+    try:
+        player_num = int(player_num_s)
+    except ValueError:
+        await msg.reply_text("player_num must be an integer (1-6).")
         return
 
-    if field not in {"game1", "game2", "game3", "game4", "game5", "game6", "total"}:
-        await msg.reply_text("Field must be game1..game6 or total.")
+    try:
+        game_num = int(game_num_s)
+    except ValueError:
+        await msg.reply_text("game_num must be an integer (1-6), or use 0 to mean TOTAL.")
         return
 
     try:
         value = int(value_s)
     except ValueError:
-        await msg.reply_text("Value must be an integer.")
+        await msg.reply_text("value must be an integer.")
         return
 
-    if field.startswith("game") and not (0 <= value <= 10):
-        await msg.reply_text("Game values must be between 0 and 10.")
+    if not (1 <= player_num <= 6):
+        await msg.reply_text("player_num must be 1-6.")
+        return
+
+    if game_num == 0:
+        field = "total"
+    elif 1 <= game_num <= 6:
+        field = f"game{game_num}"
+        if not (0 <= value <= 10):
+            await msg.reply_text("Game values must be between 0 and 10.")
+            return
+    else:
+        await msg.reply_text("game_num must be 1-6, or 0 for total.")
         return
 
     ws_s = _week_start(datetime.now()).date().isoformat()
@@ -379,9 +394,9 @@ async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         csv_p = Path(csv_path)
         rows = _load_csv_rows(csv_p)
 
-        matches = [r for r in rows if r["side"].lower() == side and r["player"] == player]
+        matches = [r for r in rows if int(r.get("player_num", -1)) == player_num]
         if not matches:
-            await msg.reply_text(f"Couldn't find player '{player}' on side '{side}' in the pending CSV.")
+            await msg.reply_text(f"Couldn't find player number {player_num} in the pending CSV.")
             return
 
         # Update all matches (should be 1)
@@ -422,18 +437,23 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     parts = shlex.split(msg.text or "")
-    if len(parts) != 4:
+    if len(parts) != 3:
         await msg.reply_text(
-            "Usage: /fixname <home|visiting> <old_name> <new_name>\n"
-            "Example: /fixname visiting \"3rd A H\" Anthony"
+            "Usage: /fixname <player_num> <new_name>\n"
+            "Example: /fixname 6 Anthony"
         )
         return
 
-    _, side, old_name, new_name = parts
-    side = side.lower()
+    _, player_num_s, new_name = parts
 
-    if side not in ("home", "visiting"):
-        await msg.reply_text("Side must be 'home' or 'visiting'.")
+    try:
+        player_num = int(player_num_s)
+    except ValueError:
+        await msg.reply_text("player_num must be an integer (1-6).")
+        return
+
+    if not (1 <= player_num <= 6):
+        await msg.reply_text("player_num must be 1-6.")
         return
 
     ws_s = _week_start(datetime.now()).date().isoformat()
@@ -452,9 +472,9 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         csv_p = Path(csv_path)
         rows = _load_csv_rows(csv_p)
 
-        matches = [r for r in rows if r["side"].lower() == side and r["player"] == old_name]
+        matches = [r for r in rows if int(r.get("player_num", -1)) == player_num]
         if not matches:
-            await msg.reply_text(f"Couldn't find player '{old_name}' on side '{side}' in the pending CSV.")
+            await msg.reply_text(f"Couldn't find player number {player_num} in the pending CSV.")
             return
 
         for r in matches:
