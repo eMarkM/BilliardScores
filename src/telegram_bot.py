@@ -47,7 +47,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 
 
 HERE = Path(__file__).resolve().parent
-PROJECT_ROOT = HERE.parents[1]
+PROJECT_ROOT = HERE.parent
 
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

@@ -38,7 +38,7 @@ from PIL import Image, ImageOps
 
 
 HERE = Path(__file__).resolve().parent
-PROJECT_ROOT = HERE.parents[1]
+PROJECT_ROOT = HERE.parent
 
 OUT_DIR = PROJECT_ROOT / "out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
