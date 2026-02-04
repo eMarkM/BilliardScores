@@ -84,15 +84,17 @@ BASE_W, BASE_H = 1280, 960
 HOME_TEAM_BOX_BASE: Tuple[int, int, int, int] = (340, 105, 370, 140)
 VISITING_TEAM_BOX_BASE: Tuple[int, int, int, int] = (790, 105, 820, 140)
 
+# Tuned after debug-crop inspection. These boxes are applied to a normalized
+# (BASE_W x BASE_H) crop of the boxscore region.
 HOME_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
-    (0, 232, 560, 295),
-    (0, 380, 560, 445),
-    (0, 520, 560, 585),
+    (0, 220, 620, 310),
+    (0, 370, 620, 460),
+    (0, 510, 620, 600),
 ]
 VISITING_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
-    (620, 232, 1145, 295),
-    (620, 345, 1145, 410),
-    (620, 460, 1145, 525),
+    (620, 220, 1280, 310),
+    (620, 370, 1280, 460),
+    (620, 510, 1280, 600),
 ]
 
 
