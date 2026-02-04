@@ -12,7 +12,7 @@ Auth:
   export OPENAI_API_KEY=...   # required to run vision extraction
 
 Usage:
-  python3 extract_nil_sample_to_csv.py --image ../NilSample.jpeg
+  python3 src/extract_nil_sample_to_csv.py --image ../NilSample.jpeg
 
 Outputs:
   out/<image>.extracted.json  (raw model output: 6 row objects after normalization)
@@ -37,8 +37,8 @@ from typing import Any, Dict, List, Tuple
 from PIL import Image, ImageOps
 
 
-HERE = Path(__file__).resolve().parent
-OUT_DIR = HERE / "out"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = PROJECT_ROOT / "out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Minimal, demo-friendly schema

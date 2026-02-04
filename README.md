@@ -19,7 +19,7 @@ export OPENAI_API_KEY=...  # required
 
 ## Run (CLI)
 ```bash
-python3 extract_nil_sample_to_csv.py --image ../NilSample.jpeg
+python3 src/extract_nil_sample_to_csv.py --image ../NilSample.jpeg
 ```
 
 Outputs:
@@ -38,7 +38,7 @@ cp .env.example .env
 ```bash
 source .venv/bin/activate
 set -a; source .env; set +a
-python3 telegram_bot.py
+python3 src/telegram_bot.py
 ```
 4) In Telegram, send the bot a scoresheet photo. It replies with a CSV.
 

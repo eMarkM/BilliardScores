@@ -16,19 +16,10 @@ Run:
   python3 -m venv .venv && source .venv/bin/activate
   pip install -r requirements.txt
   export TELEGRAM_BOT_TOKEN=... OPENAI_API_KEY=...
-  python3 telegram_bot.py
+  python3 src/telegram_bot.py
 """
 
 from __future__ import annotations
-
-# Allow running this script from the repo root without installing the package.
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -40,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
-from billiard_scores.bot_core import (
+from bot_core import (
     week_start,
     load_csv_rows,
     write_csv_rows,
@@ -55,12 +46,12 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 
-HERE = Path(__file__).resolve().parent
-UPLOADS_DIR = HERE / "uploads"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UPLOADS_DIR = PROJECT_ROOT / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = HERE / "bot.db"
-LOG_PATH = HERE / "bot.log"
+DB_PATH = PROJECT_ROOT / "bot.db"
+LOG_PATH = PROJECT_ROOT / "bot.log"
 
 logger = logging.getLogger("nilpoolbot")
 logger.setLevel(logging.INFO)
