@@ -581,24 +581,48 @@ def extract_rows_by_cropping(
 
             # Enforce: rows must start below the printed header row.
             if y1n < header_y2:
-                dy = (header_y2 - y1n) + 0.01
+                dy = (header_y2 - y1n) + 0.02
                 y1n = clamp01(y1n + dy)
                 y2n = clamp01(y2n + dy)
 
-            box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
-            crop = img_norm.crop(box)
-            if debug_dir is not None:
-                crop.save(debug_dir / f"{side}-row{idx}.png", format="PNG")
+            # Retry logic: if a band lands on "opponents"/"mark" rows, nudge downward.
+            step = 0.12
+            for attempt in range(3):
+                box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
+                crop = img_norm.crop(box)
+                if debug_dir is not None:
+                    suffix = "" if attempt == 0 else f"-try{attempt+1}"
+                    crop.save(debug_dir / f"{side}-row{idx}{suffix}.png", format="PNG")
 
-            crop_bytes = _img_crop_bytes(img_norm, box)
-            data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-            obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
-            if not isinstance(obj, dict):
-                raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
-            obj = dict(obj)
-            obj["side"] = side
-            obj["player_num"] = offset + idx
-            rows.append(obj)
+                crop_bytes = _img_crop_bytes(img_norm, box)
+                data_url = _b64_data_url_bytes(crop_bytes, "image/png")
+                obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
+                if not isinstance(obj, dict):
+                    raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
+
+                player = str(obj.get("player", "")).strip().lower()
+                # Heuristic: if we hit printed sub-rows, the model tends to output these tokens.
+                looks_wrong = (
+                    ("opponent" in player)
+                    or ("opponents" in player)
+                    or (player in {"wf", "wz", "tr", "br"})
+                )
+                if not looks_wrong:
+                    obj = dict(obj)
+                    obj["side"] = side
+                    obj["player_num"] = offset + idx
+                    rows.append(obj)
+                    break
+
+                # Nudge downward and retry
+                y1n = clamp01(y1n + step)
+                y2n = clamp01(y2n + step)
+            else:
+                # If we exhausted retries, accept the last extraction result.
+                obj = dict(obj)
+                obj["side"] = side
+                obj["player_num"] = offset + idx
+                rows.append(obj)
 
     if isinstance(bands, dict) and "home" in bands and "visiting" in bands and "header_y2" in bands:
         do_side_detected("home", bands["home"], offset=0)
@@ -748,8 +772,14 @@ def main(argv: List[str] | None = None) -> int:
                 img0 = _load_upright(image_path)
                 date_bbox = detect_date_line_bbox(img0, model=args.model)
                 if date_bbox is not None:
-                    date_crop = img0.crop(date_bbox)
-                    date_bytes, mime = _img_bytes(date_crop, max_w=1600, fmt="JPEG")
+                    x1, y1, x2, y2 = date_bbox
+                    pad = 30
+                    x1 = max(0, x1 - pad)
+                    y1 = max(0, y1 - pad)
+                    x2 = min(img0.width, x2 + pad)
+                    y2 = min(img0.height, y2 + pad)
+                    date_crop = img0.crop((x1, y1, x2, y2))
+                    date_bytes, mime = _img_bytes(date_crop, max_w=1800, fmt="JPEG")
                     (debug_dir / "date.jpg").write_bytes(date_bytes)
             except Exception:
                 pass
