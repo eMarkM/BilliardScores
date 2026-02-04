@@ -206,6 +206,21 @@ BOX_SCHEMA = {
     },
 }
 
+DATE_SCHEMA = {
+    "name": "nil_scoresheet_date_box",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "x1": {"type": "number"},
+            "y1": {"type": "number"},
+            "x2": {"type": "number"},
+            "y2": {"type": "number"},
+        },
+        "required": ["x1", "y1", "x2", "y2"],
+    },
+}
+
 ROW_SCHEMA = {
     "name": "nil_scoresheet_row",
     "schema": {
@@ -240,6 +255,10 @@ ROWBANDS_SCHEMA = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "header_y2": {
+                "type": "number",
+                "description": "Normalized y (0..1) of the bottom edge of the printed header row (Rating/Player/1..6/Total)",
+            },
             "home": {
                 "type": "object",
                 "additionalProperties": False,
@@ -287,7 +306,7 @@ ROWBANDS_SCHEMA = {
                 "required": ["x1", "x2", "rows"],
             },
         },
-        "required": ["home", "visiting"],
+        "required": ["header_y2", "home", "visiting"],
     },
 }
 
@@ -407,6 +426,37 @@ def extract_team_numbers(image_path: Path, model: str, *, debug_dir: Path | None
     return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
 
 
+def detect_date_line_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, int] | None:
+    """Locate the header line containing 'DATE'/'Home Team'/'Visiting Team'/'Hour'.
+
+    Returns pixel bbox or None.
+    """
+
+    img_bytes, mime = _img_bytes(img, max_w=1600, fmt="JPEG")
+    data_url = _b64_data_url_bytes(img_bytes, mime)
+
+    prompt = (
+        "Find the single header line near the top that includes the labels 'DATE', 'Home Team', 'Visiting Team', and 'Hour'. "
+        "Return STRICT JSON with normalized coordinates (0..1) for a tight bounding box around that entire line: "
+        "{\"x1\":...,\"y1\":...,\"x2\":...,\"y2\":...}."
+    )
+
+    try:
+        obj = openai_vision_json(prompt, data_url, model=model, schema=DATE_SCHEMA)
+        if not isinstance(obj, dict):
+            return None
+        x1 = max(0.0, min(1.0, float(obj["x1"])))
+        y1 = max(0.0, min(1.0, float(obj["y1"])))
+        x2 = max(0.0, min(1.0, float(obj["x2"])))
+        y2 = max(0.0, min(1.0, float(obj["y2"])))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        W, H = img.size
+        return (int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H))
+    except Exception:
+        return None
+
+
 def detect_boxscore_bbox(img: Image.Image, model: str) -> tuple[tuple[int, int, int, int], int] | None:
     """Try to locate the box-score table region.
 
@@ -457,9 +507,12 @@ def detect_row_bands(img_boxscore: Image.Image, model: str) -> dict | None:
 
     prompt = (
         "This image shows the NIL scoresheet BOXSCORE area with HOME TEAM on the left and VISITING TEAM on the right. "
-        "Find the 3 handwritten SCORE rows for the HOME TEAM and the 3 handwritten SCORE rows for the VISITING TEAM. "
+        "Identify the printed header row that contains labels like 'Rating', 'Player', '1 2 3 4 5 6', and 'Total'. "
+        "Return header_y2 as the normalized y-coordinate (0..1) of the bottom of that printed header row. "
+        "Then find the 3 handwritten SCORE rows for the HOME TEAM and the 3 handwritten SCORE rows for the VISITING TEAM. "
         "Return STRICT JSON with normalized coordinates between 0 and 1. "
         "For each side, provide x1/x2 that cover rating+player+games 1-6+total, and rows[0..2] as y1/y2 for each SCORE row band only. "
+        "IMPORTANT: All score rows must start BELOW header_y2. "
         "Do NOT include the 'mark BR, TR, WZ, WF' row or the 'opponents' row in any band."
     )
 
@@ -517,12 +570,21 @@ def extract_rows_by_cropping(
     def clamp01(v: float) -> float:
         return max(0.0, min(1.0, float(v)))
 
+    header_y2 = clamp01(bands.get("header_y2", 0.0)) if isinstance(bands, dict) else 0.0
+
     def do_side_detected(side: str, band_side: dict, offset: int):
         x1n = clamp01(band_side["x1"])
         x2n = clamp01(band_side["x2"])
         for idx, r in enumerate(band_side["rows"], start=1):
             y1n = clamp01(r["y1"])
             y2n = clamp01(r["y2"])
+
+            # Enforce: rows must start below the printed header row.
+            if y1n < header_y2:
+                dy = (header_y2 - y1n) + 0.01
+                y1n = clamp01(y1n + dy)
+                y2n = clamp01(y2n + dy)
+
             box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
             crop = img_norm.crop(box)
             if debug_dir is not None:
@@ -538,7 +600,7 @@ def extract_rows_by_cropping(
             obj["player_num"] = offset + idx
             rows.append(obj)
 
-    if isinstance(bands, dict) and "home" in bands and "visiting" in bands:
+    if isinstance(bands, dict) and "home" in bands and "visiting" in bands and "header_y2" in bands:
         do_side_detected("home", bands["home"], offset=0)
         do_side_detected("visiting", bands["visiting"], offset=3)
         return rows
@@ -675,10 +737,20 @@ def main(argv: List[str] | None = None) -> int:
             print(json.dumps(teams))
             return 0
 
-        # Debug aid: also save the team-number crop for the photo.
+        # Debug aid: save the team-number crop + date line crop for the photo.
         if debug_dir is not None:
             try:
                 extract_team_numbers(image_path, model=args.model, debug_dir=debug_dir)
+            except Exception:
+                pass
+
+            try:
+                img0 = _load_upright(image_path)
+                date_bbox = detect_date_line_bbox(img0, model=args.model)
+                if date_bbox is not None:
+                    date_crop = img0.crop(date_bbox)
+                    date_bytes, mime = _img_bytes(date_crop, max_w=1600, fmt="JPEG")
+                    (debug_dir / "date.jpg").write_bytes(date_bytes)
             except Exception:
                 pass
 
