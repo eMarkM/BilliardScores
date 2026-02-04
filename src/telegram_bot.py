@@ -763,11 +763,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
     # Run extractor script (full)
+    debug_dir = PROJECT_ROOT / "out" / f"debug-{image_path.stem}"
     cmd = [
         "python3",
         str(HERE / "extract_nil_sample_to_csv.py"),
         "--image",
         str(image_path),
+        "--debug-dir",
+        str(debug_dir),
     ]
 
     proc = subprocess.run(cmd, cwd=str(HERE), capture_output=True, text=True)
@@ -781,11 +784,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if proc.returncode != 0:
         logger.info(
-            "extract_failed chat_id=%s user=%s file=%s rc=%s stdout=%s stderr=%s",
+            "extract_failed chat_id=%s user=%s file=%s rc=%s debug_dir=%s stdout=%s stderr=%s",
             getattr(update.effective_chat, "id", None),
             _user_label(update),
             image_path.name,
             proc.returncode,
+            str(debug_dir),
             stdout[:500],
             stderr[:500],
         )

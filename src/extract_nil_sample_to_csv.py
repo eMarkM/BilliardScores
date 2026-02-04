@@ -275,15 +275,28 @@ def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
     return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
 
 
-def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any]]:
+def extract_rows_by_cropping(
+    image_path: Path,
+    model: str,
+    *,
+    debug_dir: Path | None = None,
+) -> List[Dict[str, Any]]:
     img = _load_upright(image_path)
     w, h = img.size
+
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, Any]] = []
 
     def do_side(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
         for idx, b in enumerate(boxes_base, start=1):
             box = _scale_box(b, w, h)
+            crop = img.crop(box)
+            if debug_dir is not None:
+                crop_path = debug_dir / f"{side}-row{idx}.png"
+                crop.save(crop_path, format="PNG")
+
             crop_bytes = _img_crop_bytes(img, box)
             data_url = _b64_data_url_bytes(crop_bytes, "image/png")
             obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
@@ -291,7 +304,6 @@ def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any
                 raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
             obj = dict(obj)
             obj["side"] = side
-            # Global player numbers: home=1..3, visiting=4..6
             obj["player_num"] = offset + idx
             rows.append(obj)
 
@@ -390,6 +402,11 @@ def main(argv: List[str] | None = None) -> int:
         action="store_true",
         help="Only extract home_team and visiting_team and print JSON to stdout",
     )
+    ap.add_argument(
+        "--debug-dir",
+        default=None,
+        help="Optional directory to write debug crop images (one PNG per row)",
+    )
     args = ap.parse_args(argv)
 
     image_path = Path(args.image).expanduser().resolve()
@@ -403,7 +420,8 @@ def main(argv: List[str] | None = None) -> int:
             print(json.dumps(teams))
             return 0
 
-        extracted = extract_rows_by_cropping(image_path, model=args.model)
+        debug_dir = Path(args.debug_dir).expanduser().resolve() if args.debug_dir else None
+        extracted = extract_rows_by_cropping(image_path, model=args.model, debug_dir=debug_dir)
         rows = normalize_rows(image_path.name, extracted)
         warnings = validate_rows(rows)
 
