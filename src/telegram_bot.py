@@ -46,7 +46,9 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parents[1]
+
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -774,7 +776,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text(friendly)
         return
 
-    out_csv = HERE / "out" / f"{image_path.stem}.csv"
+    out_csv = PROJECT_ROOT / "out" / f"{image_path.stem}.csv"
     if not out_csv.exists():
         await msg.reply_text("Extraction ran, but I couldn’t find the CSV output file.")
         return
