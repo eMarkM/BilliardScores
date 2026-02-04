@@ -183,8 +183,13 @@ BOX_SCHEMA = {
             "y1": {"type": "number"},
             "x2": {"type": "number"},
             "y2": {"type": "number"},
+            "rotation": {
+                "type": "integer",
+                "enum": [0, 180],
+                "description": "0 if image is upright, 180 if upside-down",
+            },
         },
-        "required": ["x1", "y1", "x2", "y2"],
+        "required": ["x1", "y1", "x2", "y2", "rotation"],
     },
 }
 
@@ -324,10 +329,11 @@ def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
     return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
 
 
-def detect_boxscore_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, int] | None:
+def detect_boxscore_bbox(img: Image.Image, model: str) -> tuple[tuple[int, int, int, int], int] | None:
     """Try to locate the box-score table region.
 
-    Returns a pixel bbox (x1,y1,x2,y2) or None if detection fails.
+    Returns ((x1,y1,x2,y2), rotation) where rotation is 0 or 180.
+    Returns None if detection fails.
     """
 
     img_bytes, mime = _img_bytes(img, max_w=1280, fmt="JPEG")
@@ -335,10 +341,11 @@ def detect_boxscore_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, i
 
     prompt = (
         "Find the main box-score table area on this NIL pool league scoresheet photo. "
-        "Return STRICT JSON with normalized coordinates between 0 and 1: "
-        "{\"x1\":...,\"y1\":...,\"x2\":...,\"y2\":...}. "
-        "The box should include the player name column(s) and game score columns for both teams. "
-        "If you are not confident, still return your best guess."
+        "Also determine whether the image is upside-down. "
+        "Return STRICT JSON with normalized coordinates between 0 and 1 and a rotation field: "
+        "{\"x1\":...,\"y1\":...,\"x2\":...,\"y2\":...,\"rotation\":0|180}. "
+        "rotation=0 means the text reads normally; rotation=180 means the image is upside-down. "
+        "The box should include the player name column(s) and game score columns for both teams."
     )
 
     try:
@@ -349,12 +356,13 @@ def detect_boxscore_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, i
         y1 = float(obj["y1"])
         x2 = float(obj["x2"])
         y2 = float(obj["y2"])
+        rot = int(obj.get("rotation", 0))
         # clamp
         x1, y1, x2, y2 = [max(0.0, min(1.0, v)) for v in (x1, y1, x2, y2)]
         if x2 <= x1 or y2 <= y1:
             return None
         W, H = img.size
-        return (int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H))
+        return ((int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H)), rot)
     except Exception:
         return None
 
@@ -371,9 +379,18 @@ def extract_rows_by_cropping(
         debug_dir.mkdir(parents=True, exist_ok=True)
 
     # Try to auto-crop to the boxscore table so our fixed boxes are more stable.
-    bbox = detect_boxscore_bbox(img_full, model=model)
-    if bbox is not None:
+    det = detect_boxscore_bbox(img_full, model=model)
+    if det is not None:
+        bbox, rot = det
+        if rot == 180:
+            img_full = img_full.rotate(180, expand=True)
+            # bbox was computed on the pre-rotated image; easiest is to rerun detection once.
+            det2 = detect_boxscore_bbox(img_full, model=model)
+            if det2 is not None:
+                bbox, _ = det2
         img = img_full.crop(bbox)
+        # Normalize to our base coordinate system so fixed boxes are stable.
+        img = img.resize((BASE_W, BASE_H), resample=Image.BILINEAR)
         if debug_dir is not None:
             try:
                 img.save(debug_dir / "boxscore.png", format="PNG")
