@@ -60,19 +60,24 @@ FIELDS = [
 ]
 
 
-ROW_PROMPT = """You are extracting ONE player row from a pool league scoresheet photo.
+ROW_PROMPT = """You are extracting ONE player SCORE row from a pool league scoresheet photo.
 
 This is a sports scoresheet (not an ID document). Do NOT identify real people beyond copying the handwritten name as it appears.
 
-Read the row left-to-right and output STRICT JSON with keys:
+IMPORTANT: This crop may also include the TOTAL box at the far right.
+- game1..game6 are the SIX game columns labeled 1,2,3,4,5,6
+- total is the separate TOTAL column at the far right
+- Do NOT copy the total into game6.
+
+Read the score row left-to-right and output STRICT JSON with keys:
 - player: string (copy the handwritten name as written)
 - game1..game6: integers 0-10 (the six GAME columns, in order)
-- total: integer
+- total: integer (TOTAL column)
 
 Rules:
 - Output MUST be a single JSON object.
 - Only include those keys.
-- The total should equal sum(game1..game6). If your first read doesn't match, re-check the digits and correct them.
+- total should equal sum(game1..game6). If it doesn't, re-check the digits.
 """
 
 # Row crop boxes captured from a representative phone photo after rotating it
@@ -92,15 +97,15 @@ VISITING_TEAM_BOX_BASE: Tuple[int, int, int, int] = (790, 105, 820, 140)
 HOME_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
     # Row 1 score band (David)
     (0, 215, 610, 285),
-    # Row 2 score band (Anthony) — nudge down a bit more to fully clear opponents row above
+    # Row 2 score band (Anthony)
     (0, 515, 610, 595),
-    # Row 3 score band (Ed)
-    (0, 700, 610, 780),
+    # Row 3 score band (Ed) — push lower
+    (0, 730, 610, 810),
 ]
 VISITING_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
     (620, 215, 1280, 285),
     (620, 515, 1280, 595),
-    (620, 700, 1280, 780),
+    (620, 730, 1280, 810),
 ]
 
 
@@ -298,7 +303,7 @@ def _load_upright(image_path: Path) -> Image.Image:
     return img
 
 
-def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
+def extract_team_numbers(image_path: Path, model: str, *, debug_dir: Path | None = None) -> Dict[str, int]:
     img = _load_upright(image_path)
     w, h = img.size
 
@@ -329,6 +334,14 @@ def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
     combo.paste(im2, (im1.width, 0))
     bio = io.BytesIO()
     combo.save(bio, format="PNG")
+
+    if debug_dir is not None:
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "teams.png").write_bytes(bio.getvalue())
+        except Exception:
+            pass
+
     data_url = _b64_data_url_bytes(bio.getvalue(), "image/png")
 
     obj = openai_vision_json(prompt, data_url, model=model, schema=TEAM_SCHEMA)
@@ -537,12 +550,20 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     try:
+        debug_dir = Path(args.debug_dir).expanduser().resolve() if args.debug_dir else None
+
         if args.teams_only:
-            teams = extract_team_numbers(image_path, model=args.model)
+            teams = extract_team_numbers(image_path, model=args.model, debug_dir=debug_dir)
             print(json.dumps(teams))
             return 0
 
-        debug_dir = Path(args.debug_dir).expanduser().resolve() if args.debug_dir else None
+        # Debug aid: also save the team-number crop for the photo.
+        if debug_dir is not None:
+            try:
+                extract_team_numbers(image_path, model=args.model, debug_dir=debug_dir)
+            except Exception:
+                pass
+
         extracted = extract_rows_by_cropping(image_path, model=args.model, debug_dir=debug_dir)
         rows = normalize_rows(image_path.name, extracted)
         warnings = validate_rows(rows)
