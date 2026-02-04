@@ -22,6 +22,8 @@ Run:
 from __future__ import annotations
 
 import csv
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import shlex
 import sqlite3
@@ -40,6 +42,19 @@ UPLOADS_DIR = HERE / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = HERE / "bot.db"
+LOG_PATH = HERE / "bot.log"
+
+logger = logging.getLogger("nilpoolbot")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    handler.setFormatter(fmt)
+    logger.addHandler(handler)
+    # Also log to stderr for the console
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    logger.addHandler(console)
 
 
 HELP_TEXT = (
@@ -135,6 +150,7 @@ def _user_label(update: Update) -> str:
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("help chat_id=%s user=%s", getattr(update.effective_chat, "id", None), _user_label(update))
     await update.message.reply_text(HELP_TEXT)
 
 
@@ -385,6 +401,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ).fetchone()
 
         if not row:
+            logger.info(
+                "confirm_no_pending week_start=%s chat_id=%s user=%s",
+                ws_s,
+                c.id,
+                _user_label(update),
+            )
             await msg.reply_text("No pending upload found to confirm (for this week).")
             return
 
@@ -397,6 +419,14 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     finally:
         con.close()
 
+    logger.info(
+        "confirm_ok upload_id=%s week_start=%s chat_id=%s user=%s image=%s",
+        upload_id,
+        ws_s,
+        c.id,
+        _user_label(update),
+        Path(image_path).name,
+    )
     await msg.reply_text(
         f"Confirmed upload #{upload_id} from {created_at} ({Path(image_path).name}). Thanks."
     )
@@ -462,6 +492,12 @@ async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         pending_row = _latest_pending_upload(con, ws_s, c.id, u.id)
         if not pending_row:
+            logger.info(
+                "fixscore_no_pending week_start=%s chat_id=%s user=%s",
+                ws_s,
+                c.id,
+                _user_label(update),
+            )
             await msg.reply_text("No pending upload found to fix (for this week).")
             return
 
@@ -475,12 +511,31 @@ async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         matches = [r for r in rows if int(r.get("player_num", -1)) == player_num]
         if not matches:
+            logger.info(
+                "fixscore_player_not_found upload_id=%s P%s field=%s value=%s",
+                upload_id,
+                player_num,
+                field,
+                value,
+            )
             await msg.reply_text(f"Couldn't find player number {player_num} in the pending CSV.")
             return
 
         # Update all matches (should be 1)
         for r in matches:
+            old_val = r.get(field)
             r[field] = value
+            logger.info(
+                "fixscore_ok upload_id=%s week_start=%s chat_id=%s user=%s P%s %s: %s -> %s",
+                upload_id,
+                ws_s,
+                c.id,
+                _user_label(update),
+                r.get("player_num"),
+                field,
+                old_val,
+                value,
+            )
 
         warns = _warnings_for_rows(rows)
         _write_csv_rows(csv_p, rows)
@@ -540,6 +595,12 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         pending_row = _latest_pending_upload(con, ws_s, c.id, u.id)
         if not pending_row:
+            logger.info(
+                "fixname_no_pending week_start=%s chat_id=%s user=%s",
+                ws_s,
+                c.id,
+                _user_label(update),
+            )
             await msg.reply_text("No pending upload found to fix (for this week).")
             return
 
@@ -553,11 +614,28 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         matches = [r for r in rows if int(r.get("player_num", -1)) == player_num]
         if not matches:
+            logger.info(
+                "fixname_player_not_found upload_id=%s P%s new_name=%s",
+                upload_id,
+                player_num,
+                new_name,
+            )
             await msg.reply_text(f"Couldn't find player number {player_num} in the pending CSV.")
             return
 
         for r in matches:
+            old_name = r.get("player")
             r["player"] = new_name
+            logger.info(
+                "fixname_ok upload_id=%s week_start=%s chat_id=%s user=%s P%s: %s -> %s",
+                upload_id,
+                ws_s,
+                c.id,
+                _user_label(update),
+                r.get("player_num"),
+                old_name,
+                new_name,
+            )
 
         warns = _warnings_for_rows(rows)
         _write_csv_rows(csv_p, rows)
@@ -628,6 +706,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     else:
         image_path = image_path_tmp
 
+    logger.info(
+        "photo_received chat_id=%s user=%s file=%s teams=%s-%s",
+        getattr(update.effective_chat, "id", None),
+        _user_label(update),
+        image_path.name,
+        team_home,
+        team_vis,
+    )
+
     # Run extractor script (full)
     cmd = [
         "python3",
@@ -675,6 +762,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     teams_count = _teams_count()
     ok, problems = _plausibility_check(rows, teams_count, team_home, team_vis)
     if not ok:
+        logger.info(
+            "photo_rejected chat_id=%s user=%s file=%s problems=%s",
+            getattr(update.effective_chat, "id", None),
+            _user_label(update),
+            image_path.name,
+            "; ".join(problems),
+        )
         details = "\n".join([f"- {p}" for p in problems])
         await msg.reply_text(
             "That doesn’t look like a NIL scoresheet upload, so I’m not going to accept it.\n\n"
@@ -720,6 +814,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         con.commit()
     finally:
         con.close()
+
+    logger.info(
+        "upload_recorded upload_id=%s week_start=%s chat_id=%s user=%s home_team=%s visiting_team=%s csv=%s warnings=%s",
+        upload_id,
+        ws,
+        getattr(update.effective_chat, "id", None),
+        _user_label(update),
+        team_home,
+        team_vis,
+        out_csv.name,
+        "yes" if warn_text else "no",
+    )
 
     teams_line = ""
     if team_home is not None and team_vis is not None:
