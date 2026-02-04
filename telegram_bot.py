@@ -65,6 +65,7 @@ HELP_TEXT = (
     "3) If not, use /fixscore or /fixname (or re-upload a clearer photo)\n\n"
     "Commands:\n"
     "- /confirm — confirm your latest pending upload for this week\n"
+    "- /csv — get your confirmed CSV for this week\n"
     "- /status — show team upload status since Monday\n"
     "- /fixscore — correct a score in your pending CSV\n"
     "- /fixname — correct a player name in your pending CSV\n"
@@ -372,6 +373,60 @@ def _latest_pending_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, use
         """,
         (ws_s, chat_id, user_id),
     ).fetchone()
+
+
+def _latest_confirmed_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, user_id: int):
+    return con.execute(
+        """
+        SELECT id, created_at, image_path, csv_path
+        FROM uploads
+        WHERE week_start = ? AND chat_id = ? AND user_id = ? AND confirmed_at IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (ws_s, chat_id, user_id),
+    ).fetchone()
+
+
+async def csv_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg:
+        return
+
+    u = update.effective_user
+    c = update.effective_chat
+    if not u or not c:
+        await msg.reply_text("Can’t determine user/chat.")
+        return
+
+    ws_s = _week_start(datetime.now()).date().isoformat()
+
+    con = _db()
+    try:
+        row = _latest_confirmed_upload(con, ws_s, c.id, u.id)
+    finally:
+        con.close()
+
+    if not row:
+        logger.info("csv_no_confirmed week_start=%s chat_id=%s user=%s", ws_s, c.id, _user_label(update))
+        await msg.reply_text("No confirmed upload found for this week yet.")
+        return
+
+    upload_id, created_at, image_path, csv_path = row
+    if not csv_path or not Path(csv_path).exists():
+        await msg.reply_text("I found your confirmed upload, but the CSV file is missing.")
+        return
+
+    logger.info(
+        "csv_send upload_id=%s week_start=%s chat_id=%s user=%s",
+        upload_id,
+        ws_s,
+        c.id,
+        _user_label(update),
+    )
+
+    caption = f"Confirmed CSV for week starting {ws_s} (upload #{upload_id})."
+    await msg.reply_document(document=Path(csv_path).open("rb"), filename=Path(csv_path).name, caption=caption)
 
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -853,6 +908,7 @@ def main() -> None:
     app.add_handler(CommandHandler(["start"], start))
     app.add_handler(CommandHandler(["help"], help_cmd))
     app.add_handler(CommandHandler(["confirm"], confirm))
+    app.add_handler(CommandHandler(["csv"], csv_cmd))
     app.add_handler(CommandHandler(["fixscore"], fixscore))
     app.add_handler(CommandHandler(["fixname"], fixname))
     app.add_handler(CommandHandler(["status"], status))
