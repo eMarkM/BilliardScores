@@ -721,6 +721,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await msg.chat.send_action(ChatAction.TYPING)
 
+    # Warn if user already has a confirmed upload this week.
+    ws_s = _week_start(datetime.now()).date().isoformat()
+    con_warn = _db()
+    try:
+        confirmed = _latest_confirmed_upload(con_warn, ws_s, update.effective_chat.id if update.effective_chat else 0, update.effective_user.id if update.effective_user else 0)
+    finally:
+        con_warn.close()
+
+    if confirmed:
+        cid, created_at, img_path, csv_path = confirmed
+        await msg.reply_text(
+            f"Heads up: you already have a CONFIRMED upload for this week (upload #{cid}). "
+            "If you upload again, it will replace what your team is using unless you keep the old one. "
+            "Go ahead and send the new photo if you intend to update it."
+        )
+
     # Get best resolution photo
     photo = msg.photo[-1]
     file = await context.bot.get_file(photo.file_id)
