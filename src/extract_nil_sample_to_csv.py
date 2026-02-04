@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Tuple
 
 from PIL import Image, ImageOps
 
+# Optional: help type-checkers; not required at runtime.
+
 
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent
@@ -99,8 +101,38 @@ def _b64_data_url_bytes(img_bytes: bytes, mime: str) -> str:
     return f"data:{mime};base64,{data}"
 
 
-def _img_crop_bytes(img: Image.Image, box: Tuple[int, int, int, int]) -> bytes:
+def _img_bytes(img: Image.Image, *, max_w: int = 1280, fmt: str = "JPEG") -> tuple[bytes, str]:
+    """Encode an image for sending to the vision model.
+
+    Downscales large images to keep payload size reasonable.
+    Returns (bytes, mime).
+    """
+
+    im = img
+    if im.width > max_w:
+        scale = max_w / im.width
+        im = im.resize((max_w, int(im.height * scale)), resample=Image.BILINEAR)
+
+    import io
+
+    bio = io.BytesIO()
+    if fmt.upper() == "JPEG":
+        im.convert("RGB").save(bio, format="JPEG", quality=85, optimize=True)
+        return bio.getvalue(), "image/jpeg"
+    im.save(bio, format="PNG")
+    return bio.getvalue(), "image/png"
+
+
+def _img_crop_bytes(
+    img: Image.Image,
+    box: Tuple[int, int, int, int],
+    *,
+    upscale: int = 1,
+) -> bytes:
     crop = img.crop(box)
+    if upscale and upscale > 1:
+        crop = crop.resize((crop.width * upscale, crop.height * upscale), resample=Image.NEAREST)
+
     import io
 
     bio = io.BytesIO()
@@ -138,6 +170,21 @@ TEAM_SCHEMA = {
             "visiting_team": {"type": "integer"},
         },
         "required": ["home_team", "visiting_team"],
+    },
+}
+
+BOX_SCHEMA = {
+    "name": "nil_scoresheet_box",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "x1": {"type": "number"},
+            "y1": {"type": "number"},
+            "x2": {"type": "number"},
+            "y2": {"type": "number"},
+        },
+        "required": ["x1", "y1", "x2", "y2"],
     },
 }
 
@@ -242,13 +289,15 @@ def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
     img = _load_upright(image_path)
     w, h = img.size
 
-    # Crop a slightly padded region around each digit and ask the model for the integer.
-    def padded(box_base: Tuple[int, int, int, int], pad: int = 20) -> Tuple[int, int, int, int]:
+    # Crop a padded region around each digit and ask the model for the integer.
+    # A larger pad helps when photos are framed differently.
+    def padded(box_base: Tuple[int, int, int, int], pad: int = 60) -> Tuple[int, int, int, int]:
         x1, y1, x2, y2 = _scale_box(box_base, w, h)
         return (max(0, x1 - pad), max(0, y1 - pad), min(w, x2 + pad), min(h, y2 + pad))
 
-    home_crop = _img_crop_bytes(img, padded(HOME_TEAM_BOX_BASE))
-    visiting_crop = _img_crop_bytes(img, padded(VISITING_TEAM_BOX_BASE))
+    # Upscale digits a bit to help legibility.
+    home_crop = _img_crop_bytes(img, padded(HOME_TEAM_BOX_BASE), upscale=3)
+    visiting_crop = _img_crop_bytes(img, padded(VISITING_TEAM_BOX_BASE), upscale=3)
 
     prompt = (
         "Read the handwritten team number in this crop. "
@@ -275,17 +324,65 @@ def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
     return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
 
 
+def detect_boxscore_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, int] | None:
+    """Try to locate the box-score table region.
+
+    Returns a pixel bbox (x1,y1,x2,y2) or None if detection fails.
+    """
+
+    img_bytes, mime = _img_bytes(img, max_w=1280, fmt="JPEG")
+    data_url = _b64_data_url_bytes(img_bytes, mime)
+
+    prompt = (
+        "Find the main box-score table area on this NIL pool league scoresheet photo. "
+        "Return STRICT JSON with normalized coordinates between 0 and 1: "
+        "{\"x1\":...,\"y1\":...,\"x2\":...,\"y2\":...}. "
+        "The box should include the player name column(s) and game score columns for both teams. "
+        "If you are not confident, still return your best guess."
+    )
+
+    try:
+        obj = openai_vision_json(prompt, data_url, model=model, schema=BOX_SCHEMA)
+        if not isinstance(obj, dict):
+            return None
+        x1 = float(obj["x1"])
+        y1 = float(obj["y1"])
+        x2 = float(obj["x2"])
+        y2 = float(obj["y2"])
+        # clamp
+        x1, y1, x2, y2 = [max(0.0, min(1.0, v)) for v in (x1, y1, x2, y2)]
+        if x2 <= x1 or y2 <= y1:
+            return None
+        W, H = img.size
+        return (int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H))
+    except Exception:
+        return None
+
+
 def extract_rows_by_cropping(
     image_path: Path,
     model: str,
     *,
     debug_dir: Path | None = None,
 ) -> List[Dict[str, Any]]:
-    img = _load_upright(image_path)
-    w, h = img.size
+    img_full = _load_upright(image_path)
 
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try to auto-crop to the boxscore table so our fixed boxes are more stable.
+    bbox = detect_boxscore_bbox(img_full, model=model)
+    if bbox is not None:
+        img = img_full.crop(bbox)
+        if debug_dir is not None:
+            try:
+                img.save(debug_dir / "boxscore.png", format="PNG")
+            except Exception:
+                pass
+    else:
+        img = img_full
+
+    w, h = img.size
 
     rows: List[Dict[str, Any]] = []
 
