@@ -910,6 +910,15 @@ def main() -> None:
     if not token:
         raise SystemExit("Missing TELEGRAM_BOT_TOKEN env var")
 
+    logger.info(
+        "service_started pid=%s cwd=%s db=%s uploads=%s out=%s",
+        os.getpid(),
+        os.getcwd(),
+        DB_PATH,
+        UPLOADS_DIR,
+        PROJECT_ROOT / "out",
+    )
+
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler(["start"], start))
