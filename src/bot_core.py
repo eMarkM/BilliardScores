@@ -71,8 +71,14 @@ def plausibility_check(
     teams_count: int,
     home_team: Optional[int],
     visiting_team: Optional[int],
+    *,
+    require_teams: bool = True,
 ) -> Tuple[bool, List[str]]:
-    """Basic guard rails to avoid accepting random photos."""
+    """Basic guard rails to avoid accepting random photos.
+
+    If require_teams is False, missing/unreadable team numbers won't cause rejection
+    (useful when the photo is taken from farther away but the score rows are legible).
+    """
 
     problems: List[str] = []
 
@@ -80,15 +86,16 @@ def plausibility_check(
         problems.append(f"Expected 6 player rows, got {len(rows)}")
         return False, problems
 
-    if home_team is None or visiting_team is None:
-        problems.append("Could not read Home/Visiting team numbers")
-    else:
-        if not (1 <= home_team <= teams_count):
-            problems.append(f"Home team {home_team} out of range 1..{teams_count}")
-        if not (1 <= visiting_team <= teams_count):
-            problems.append(f"Visiting team {visiting_team} out of range 1..{teams_count}")
-        if home_team == visiting_team:
-            problems.append("Home and Visiting team numbers are identical")
+    if require_teams:
+        if home_team is None or visiting_team is None:
+            problems.append("Could not read Home/Visiting team numbers")
+        else:
+            if not (1 <= home_team <= teams_count):
+                problems.append(f"Home team {home_team} out of range 1..{teams_count}")
+            if not (1 <= visiting_team <= teams_count):
+                problems.append(f"Visiting team {visiting_team} out of range 1..{teams_count}")
+            if home_team == visiting_team:
+                problems.append("Home and Visiting team numbers are identical")
 
     name_ok = 0
     for r in rows:
