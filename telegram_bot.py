@@ -156,7 +156,6 @@ def _user_label(update: Update) -> str:
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("help chat_id=%s user=%s", getattr(update.effective_chat, "id", None), _user_label(update))
     await update.message.reply_text(HELP_TEXT)
 
 
