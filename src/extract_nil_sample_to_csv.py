@@ -37,7 +37,9 @@ from typing import Any, Dict, List, Tuple
 from PIL import Image, ImageOps
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parents[1]
+
 OUT_DIR = PROJECT_ROOT / "out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -97,8 +99,22 @@ def _b64_data_url_bytes(img_bytes: bytes, mime: str) -> str:
     return f"data:{mime};base64,{data}"
 
 
-def _img_crop_bytes(img: Image.Image, box: Tuple[int, int, int, int]) -> bytes:
+def _img_crop_bytes(
+    img: Image.Image,
+    box: Tuple[int, int, int, int],
+    *,
+    upscale: int = 1,
+) -> bytes:
+    """Crop to box and return PNG bytes.
+
+    If upscale > 1, resize the crop with nearest-neighbor to preserve hard edges
+    (helps when the source photo is taken from farther away).
+    """
+
     crop = img.crop(box)
+    if upscale and upscale > 1:
+        crop = crop.resize((crop.width * upscale, crop.height * upscale), resample=Image.NEAREST)
+
     import io
 
     bio = io.BytesIO()
@@ -273,7 +289,7 @@ def extract_team_numbers(image_path: Path, model: str) -> Dict[str, int]:
     return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
 
 
-def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any]]:
+def extract_rows_by_cropping(image_path: Path, model: str, *, row_upscale: int = 2) -> List[Dict[str, Any]]:
     img = _load_upright(image_path)
     w, h = img.size
 
@@ -282,7 +298,7 @@ def extract_rows_by_cropping(image_path: Path, model: str) -> List[Dict[str, Any
     def do_side(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
         for idx, b in enumerate(boxes_base, start=1):
             box = _scale_box(b, w, h)
-            crop_bytes = _img_crop_bytes(img, box)
+            crop_bytes = _img_crop_bytes(img, box, upscale=row_upscale)
             data_url = _b64_data_url_bytes(crop_bytes, "image/png")
             obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
             if not isinstance(obj, dict):
@@ -388,6 +404,12 @@ def main(argv: List[str] | None = None) -> int:
         action="store_true",
         help="Only extract home_team and visiting_team and print JSON to stdout",
     )
+    ap.add_argument(
+        "--row-upscale",
+        type=int,
+        default=2,
+        help="Upscale each row crop by this factor before sending to the model (default: 2)",
+    )
     args = ap.parse_args(argv)
 
     image_path = Path(args.image).expanduser().resolve()
@@ -401,7 +423,7 @@ def main(argv: List[str] | None = None) -> int:
             print(json.dumps(teams))
             return 0
 
-        extracted = extract_rows_by_cropping(image_path, model=args.model)
+        extracted = extract_rows_by_cropping(image_path, model=args.model, row_upscale=args.row_upscale)
         rows = normalize_rows(image_path.name, extracted)
         warnings = validate_rows(rows)
 
