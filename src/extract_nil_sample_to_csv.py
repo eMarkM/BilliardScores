@@ -90,14 +90,17 @@ VISITING_TEAM_BOX_BASE: Tuple[int, int, int, int] = (790, 105, 820, 140)
 # Goal: capture ONLY the main score row (rating/player + games 1-6 + total),
 # not the "mark BR, TR..." or "opponents" rows.
 HOME_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
+    # Row 1 score band (David)
     (0, 215, 610, 285),
-    (0, 365, 610, 435),
-    (0, 505, 610, 575),
+    # Row 2 score band (Anthony) — moved down; previous box was hitting opponents row of row1
+    (0, 495, 610, 565),
+    # Row 3 score band (Ed)
+    (0, 675, 610, 745),
 ]
 VISITING_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
     (620, 215, 1280, 285),
-    (620, 365, 1280, 435),
-    (620, 505, 1280, 575),
+    (620, 495, 1280, 565),
+    (620, 675, 1280, 745),
 ]
 
 
