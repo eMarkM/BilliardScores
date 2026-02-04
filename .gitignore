@@ -8,3 +8,6 @@ out/
 bot.db
 bot.log
 
+# Integration test artifacts (debug crops, etc.)
+tests/_artifacts/
+

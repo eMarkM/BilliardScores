@@ -311,58 +311,20 @@ ROWBANDS_SCHEMA = {
 }
 
 
+from vision_client import VisionClient, OpenAIVisionClient
+
+
 def openai_vision_json(prompt: str, data_url: str, model: str, schema: dict) -> Any:
-    """Call the vision model and force strict JSON.
+    """Backward-compatible helper (live OpenAI call)."""
 
-    We use response_format=json_schema so the model can't reply with prose.
-    If the model refuses anyway, we raise VisionRefusal.
-    """
+    return OpenAIVisionClient().vision_json(prompt=prompt, data_url=data_url, model=model, schema=schema)
 
-    try:
-        from openai import OpenAI
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError(
-            "openai python package not installed. Run: pip install -r requirements.txt"
-        ) from e
 
-    client = OpenAI()
+def vision_json(client: VisionClient, prompt: str, data_url: str, model: str, schema: dict) -> Any:
+    """Pluggable helper used by the extractor pipeline."""
 
-    resp = client.chat.completions.create(
-        model=model,
-        response_format={"type": "json_schema", "json_schema": schema},
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You extract numbers from sports scoresheets. "
-                    "Return only the requested JSON. Do not include commentary."
-                ),
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            },
-        ],
-        temperature=0,
-    )
-
-    text = (resp.choices[0].message.content or "").strip()
-    if not text:
-        raise RuntimeError("Model returned empty response")
-
-    # If we ever get a refusal/prose response, surface it cleanly.
-    lowered = text.lower()
-    if "can't assist" in lowered or "cannot assist" in lowered or "i'm sorry" in lowered:
-        raise VisionRefusal(text)
-
-    text = _strip_code_fences(text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Model did not return valid JSON. Raw output:\n{text}") from e
+    obj = client.vision_json(prompt=prompt, data_url=data_url, model=model, schema=schema)
+    return obj
 
 
 def _load_upright(image_path: Path) -> Image.Image:
@@ -379,7 +341,13 @@ def _load_upright(image_path: Path) -> Image.Image:
     return img
 
 
-def extract_team_numbers(image_path: Path, model: str, *, debug_dir: Path | None = None) -> Dict[str, int]:
+def extract_team_numbers(
+    image_path: Path,
+    model: str,
+    *,
+    client: VisionClient | None = None,
+    debug_dir: Path | None = None,
+) -> Dict[str, int]:
     img = _load_upright(image_path)
     w, h = img.size
 
@@ -420,13 +388,14 @@ def extract_team_numbers(image_path: Path, model: str, *, debug_dir: Path | None
 
     data_url = _b64_data_url_bytes(bio.getvalue(), "image/png")
 
-    obj = openai_vision_json(prompt, data_url, model=model, schema=TEAM_SCHEMA)
+    vc = client or OpenAIVisionClient()
+    obj = vision_json(vc, prompt, data_url, model=model, schema=TEAM_SCHEMA)
     if not isinstance(obj, dict):
         raise RuntimeError(f"Expected teams object, got: {type(obj)}")
     return {"home_team": int(obj["home_team"]), "visiting_team": int(obj["visiting_team"])}
 
 
-def detect_date_line_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, int] | None:
+def detect_date_line_bbox(img: Image.Image, model: str, *, client: VisionClient | None = None) -> Tuple[int, int, int, int] | None:
     """Locate the header line containing 'DATE'/'Home Team'/'Visiting Team'/'Hour'.
 
     Returns pixel bbox or None.
@@ -442,7 +411,8 @@ def detect_date_line_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, 
     )
 
     try:
-        obj = openai_vision_json(prompt, data_url, model=model, schema=DATE_SCHEMA)
+        vc = client or OpenAIVisionClient()
+        obj = vision_json(vc, prompt, data_url, model=model, schema=DATE_SCHEMA)
         if not isinstance(obj, dict):
             return None
         x1 = max(0.0, min(1.0, float(obj["x1"])))
@@ -457,7 +427,12 @@ def detect_date_line_bbox(img: Image.Image, model: str) -> Tuple[int, int, int, 
         return None
 
 
-def detect_boxscore_bbox(img: Image.Image, model: str) -> tuple[tuple[int, int, int, int], int] | None:
+def detect_boxscore_bbox(
+    img: Image.Image,
+    model: str,
+    *,
+    client: VisionClient | None = None,
+) -> tuple[tuple[int, int, int, int], int] | None:
     """Try to locate the box-score table region.
 
     Returns ((x1,y1,x2,y2), rotation) where rotation is 0 or 180.
@@ -477,7 +452,8 @@ def detect_boxscore_bbox(img: Image.Image, model: str) -> tuple[tuple[int, int, 
     )
 
     try:
-        obj = openai_vision_json(prompt, data_url, model=model, schema=BOX_SCHEMA)
+        vc = client or OpenAIVisionClient()
+        obj = vision_json(vc, prompt, data_url, model=model, schema=BOX_SCHEMA)
         if not isinstance(obj, dict):
             return None
         x1 = float(obj["x1"])
@@ -495,7 +471,12 @@ def detect_boxscore_bbox(img: Image.Image, model: str) -> tuple[tuple[int, int, 
         return None
 
 
-def detect_row_bands(img_boxscore: Image.Image, model: str) -> dict | None:
+def detect_row_bands(
+    img_boxscore: Image.Image,
+    model: str,
+    *,
+    client: VisionClient | None = None,
+) -> dict | None:
     """Detect row bands (score rows only) for home + visiting tables.
 
     img_boxscore should already be upright and roughly cropped to the boxscore area.
@@ -517,7 +498,8 @@ def detect_row_bands(img_boxscore: Image.Image, model: str) -> dict | None:
     )
 
     try:
-        obj = openai_vision_json(prompt, data_url, model=model, schema=ROWBANDS_SCHEMA)
+        vc = client or OpenAIVisionClient()
+        obj = vision_json(vc, prompt, data_url, model=model, schema=ROWBANDS_SCHEMA)
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
@@ -527,6 +509,7 @@ def extract_rows_by_cropping(
     image_path: Path,
     model: str,
     *,
+    client: VisionClient | None = None,
     debug_dir: Path | None = None,
 ) -> List[Dict[str, Any]]:
     img_full = _load_upright(image_path)
@@ -535,12 +518,14 @@ def extract_rows_by_cropping(
         debug_dir.mkdir(parents=True, exist_ok=True)
 
     # Try to auto-crop to the boxscore table so our fixed boxes are more stable.
-    det = detect_boxscore_bbox(img_full, model=model)
+    vc = client or OpenAIVisionClient()
+
+    det = detect_boxscore_bbox(img_full, model=model, client=vc)
     if det is not None:
         bbox, rot = det
         if rot == 180:
             img_full = img_full.rotate(180, expand=True)
-            det2 = detect_boxscore_bbox(img_full, model=model)
+            det2 = detect_boxscore_bbox(img_full, model=model, client=vc)
             if det2 is not None:
                 bbox, _ = det2
         img_box = img_full.crop(bbox)
@@ -558,7 +543,7 @@ def extract_rows_by_cropping(
     w, h = img_norm.size
 
     # Anchor-based step: detect exact score-row bands inside the boxscore.
-    bands = detect_row_bands(img_norm, model=model)
+    bands = detect_row_bands(img_norm, model=model, client=vc)
     if debug_dir is not None and bands is not None:
         try:
             (debug_dir / "rowbands.json").write_text(json.dumps(bands, indent=2), encoding="utf-8")
@@ -596,7 +581,7 @@ def extract_rows_by_cropping(
 
                 crop_bytes = _img_crop_bytes(img_norm, box)
                 data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-                obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
+                obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
                 if not isinstance(obj, dict):
                     raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
 
@@ -639,7 +624,7 @@ def extract_rows_by_cropping(
 
             crop_bytes = _img_crop_bytes(img_norm, box)
             data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-            obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
+            obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
             if not isinstance(obj, dict):
                 raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
             obj = dict(obj)
@@ -757,20 +742,20 @@ def main(argv: List[str] | None = None) -> int:
         debug_dir = Path(args.debug_dir).expanduser().resolve() if args.debug_dir else None
 
         if args.teams_only:
-            teams = extract_team_numbers(image_path, model=args.model, debug_dir=debug_dir)
+            teams = extract_team_numbers(image_path, model=args.model, client=OpenAIVisionClient(), debug_dir=debug_dir)
             print(json.dumps(teams))
             return 0
 
         # Debug aid: save the team-number crop + date line crop for the photo.
         if debug_dir is not None:
             try:
-                extract_team_numbers(image_path, model=args.model, debug_dir=debug_dir)
+                extract_team_numbers(image_path, model=args.model, client=OpenAIVisionClient(), debug_dir=debug_dir)
             except Exception:
                 pass
 
             try:
                 img0 = _load_upright(image_path)
-                date_bbox = detect_date_line_bbox(img0, model=args.model)
+                date_bbox = detect_date_line_bbox(img0, model=args.model, client=OpenAIVisionClient())
                 if date_bbox is not None:
                     x1, y1, x2, y2 = date_bbox
                     pad = 30
@@ -784,7 +769,7 @@ def main(argv: List[str] | None = None) -> int:
             except Exception:
                 pass
 
-        extracted = extract_rows_by_cropping(image_path, model=args.model, debug_dir=debug_dir)
+        extracted = extract_rows_by_cropping(image_path, model=args.model, client=OpenAIVisionClient(), debug_dir=debug_dir)
         rows = normalize_rows(image_path.name, extracted)
         warnings = validate_rows(rows)
 
