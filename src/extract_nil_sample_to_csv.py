@@ -234,6 +234,63 @@ ROW_SCHEMA = {
     },
 }
 
+ROWBANDS_SCHEMA = {
+    "name": "nil_scoresheet_rowbands",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "home": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "x1": {"type": "number"},
+                    "x2": {"type": "number"},
+                    "rows": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "y1": {"type": "number"},
+                                "y2": {"type": "number"},
+                            },
+                            "required": ["y1", "y2"],
+                        },
+                    },
+                },
+                "required": ["x1", "x2", "rows"],
+            },
+            "visiting": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "x1": {"type": "number"},
+                    "x2": {"type": "number"},
+                    "rows": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "y1": {"type": "number"},
+                                "y2": {"type": "number"},
+                            },
+                            "required": ["y1", "y2"],
+                        },
+                    },
+                },
+                "required": ["x1", "x2", "rows"],
+            },
+        },
+        "required": ["home", "visiting"],
+    },
+}
+
 
 def openai_vision_json(prompt: str, data_url: str, model: str, schema: dict) -> Any:
     """Call the vision model and force strict JSON.
@@ -388,6 +445,31 @@ def detect_boxscore_bbox(img: Image.Image, model: str) -> tuple[tuple[int, int, 
         return None
 
 
+def detect_row_bands(img_boxscore: Image.Image, model: str) -> dict | None:
+    """Detect row bands (score rows only) for home + visiting tables.
+
+    img_boxscore should already be upright and roughly cropped to the boxscore area.
+    Returns normalized coordinates in [0,1].
+    """
+
+    img_bytes, mime = _img_bytes(img_boxscore, max_w=1280, fmt="JPEG")
+    data_url = _b64_data_url_bytes(img_bytes, mime)
+
+    prompt = (
+        "This image shows the NIL scoresheet BOXSCORE area with HOME TEAM on the left and VISITING TEAM on the right. "
+        "Find the 3 handwritten SCORE rows for the HOME TEAM and the 3 handwritten SCORE rows for the VISITING TEAM. "
+        "Return STRICT JSON with normalized coordinates between 0 and 1. "
+        "For each side, provide x1/x2 that cover rating+player+games 1-6+total, and rows[0..2] as y1/y2 for each SCORE row band only. "
+        "Do NOT include the 'mark BR, TR, WZ, WF' row or the 'opponents' row in any band."
+    )
+
+    try:
+        obj = openai_vision_json(prompt, data_url, model=model, schema=ROWBANDS_SCHEMA)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
 def extract_rows_by_cropping(
     image_path: Path,
     model: str,
@@ -405,34 +487,48 @@ def extract_rows_by_cropping(
         bbox, rot = det
         if rot == 180:
             img_full = img_full.rotate(180, expand=True)
-            # bbox was computed on the pre-rotated image; easiest is to rerun detection once.
             det2 = detect_boxscore_bbox(img_full, model=model)
             if det2 is not None:
                 bbox, _ = det2
-        img = img_full.crop(bbox)
-        # Normalize to our base coordinate system so fixed boxes are stable.
-        img = img.resize((BASE_W, BASE_H), resample=Image.BILINEAR)
-        if debug_dir is not None:
-            try:
-                img.save(debug_dir / "boxscore.png", format="PNG")
-            except Exception:
-                pass
+        img_box = img_full.crop(bbox)
     else:
-        img = img_full
+        img_box = img_full
 
-    w, h = img.size
+    # Normalize to base size for more consistent prompts/debug.
+    img_norm = img_box.resize((BASE_W, BASE_H), resample=Image.BILINEAR)
+    if debug_dir is not None:
+        try:
+            img_norm.save(debug_dir / "boxscore.png", format="PNG")
+        except Exception:
+            pass
+
+    w, h = img_norm.size
+
+    # Anchor-based step: detect exact score-row bands inside the boxscore.
+    bands = detect_row_bands(img_norm, model=model)
+    if debug_dir is not None and bands is not None:
+        try:
+            (debug_dir / "rowbands.json").write_text(json.dumps(bands, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     rows: List[Dict[str, Any]] = []
 
-    def do_side(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
-        for idx, b in enumerate(boxes_base, start=1):
-            box = _scale_box(b, w, h)
-            crop = img.crop(box)
-            if debug_dir is not None:
-                crop_path = debug_dir / f"{side}-row{idx}.png"
-                crop.save(crop_path, format="PNG")
+    def clamp01(v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
 
-            crop_bytes = _img_crop_bytes(img, box)
+    def do_side_detected(side: str, band_side: dict, offset: int):
+        x1n = clamp01(band_side["x1"])
+        x2n = clamp01(band_side["x2"])
+        for idx, r in enumerate(band_side["rows"], start=1):
+            y1n = clamp01(r["y1"])
+            y2n = clamp01(r["y2"])
+            box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
+            crop = img_norm.crop(box)
+            if debug_dir is not None:
+                crop.save(debug_dir / f"{side}-row{idx}.png", format="PNG")
+
+            crop_bytes = _img_crop_bytes(img_norm, box)
             data_url = _b64_data_url_bytes(crop_bytes, "image/png")
             obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
             if not isinstance(obj, dict):
@@ -442,9 +538,31 @@ def extract_rows_by_cropping(
             obj["player_num"] = offset + idx
             rows.append(obj)
 
-    do_side("home", HOME_ROW_BOXES_BASE, offset=0)
-    do_side("visiting", VISITING_ROW_BOXES_BASE, offset=3)
+    if isinstance(bands, dict) and "home" in bands and "visiting" in bands:
+        do_side_detected("home", bands["home"], offset=0)
+        do_side_detected("visiting", bands["visiting"], offset=3)
+        return rows
 
+    # Fallback to legacy fixed boxes.
+    def do_side_fixed(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
+        for idx, b in enumerate(boxes_base, start=1):
+            box = b  # already in BASE_W/BASE_H coords because img_norm is normalized
+            crop = img_norm.crop(box)
+            if debug_dir is not None:
+                crop.save(debug_dir / f"{side}-row{idx}.png", format="PNG")
+
+            crop_bytes = _img_crop_bytes(img_norm, box)
+            data_url = _b64_data_url_bytes(crop_bytes, "image/png")
+            obj = openai_vision_json(ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
+            if not isinstance(obj, dict):
+                raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
+            obj = dict(obj)
+            obj["side"] = side
+            obj["player_num"] = offset + idx
+            rows.append(obj)
+
+    do_side_fixed("home", HOME_ROW_BOXES_BASE, offset=0)
+    do_side_fixed("visiting", VISITING_ROW_BOXES_BASE, offset=3)
     return rows
 
 
