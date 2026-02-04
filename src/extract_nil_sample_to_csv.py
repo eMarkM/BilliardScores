@@ -86,15 +86,18 @@ VISITING_TEAM_BOX_BASE: Tuple[int, int, int, int] = (790, 105, 820, 140)
 
 # Tuned after debug-crop inspection. These boxes are applied to a normalized
 # (BASE_W x BASE_H) crop of the boxscore region.
+#
+# Goal: capture ONLY the main score row (rating/player + games 1-6 + total),
+# not the "mark BR, TR..." or "opponents" rows.
 HOME_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
-    (0, 220, 620, 310),
-    (0, 370, 620, 460),
-    (0, 510, 620, 600),
+    (0, 215, 610, 285),
+    (0, 365, 610, 435),
+    (0, 505, 610, 575),
 ]
 VISITING_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
-    (620, 220, 1280, 310),
-    (620, 370, 1280, 460),
-    (620, 510, 1280, 600),
+    (620, 215, 1280, 285),
+    (620, 365, 1280, 435),
+    (620, 505, 1280, 575),
 ]
 
 
