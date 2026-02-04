@@ -791,7 +791,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     teams_count = _teams_count()
-    ok, problems = plausibility_check(rows, teams_count, team_home, team_vis, require_teams=False)
+    ok, problems = plausibility_check(rows, teams_count, team_home, team_vis)
     if not ok:
         logger.info(
             "photo_rejected chat_id=%s user=%s file=%s problems=%s",

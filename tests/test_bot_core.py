@@ -40,13 +40,13 @@ def test_warnings_total_mismatch():
 
 
 def test_plausibility_accepts_good():
-    ok, problems = plausibility_check(sample_rows(), teams_count=14, home_team=5, visiting_team=2, require_teams=True)
+    ok, problems = plausibility_check(sample_rows(), teams_count=14, home_team=5, visiting_team=2)
     assert ok
     assert problems == []
 
 
 def test_plausibility_rejects_missing_teams():
-    ok, problems = plausibility_check(sample_rows(), teams_count=14, home_team=None, visiting_team=None, require_teams=True)
+    ok, problems = plausibility_check(sample_rows(), teams_count=14, home_team=None, visiting_team=None)
     assert not ok
     assert any("Could not read" in p for p in problems)
 
