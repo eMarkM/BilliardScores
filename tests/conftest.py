@@ -1,7 +1,9 @@
 import sys
 from pathlib import Path
 
-# Ensure project root is importable in tests
+# Ensure src/ is importable in tests (src layout)
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+for p in (SRC, ROOT):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))

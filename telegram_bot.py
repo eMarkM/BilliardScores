@@ -21,6 +21,15 @@ Run:
 
 from __future__ import annotations
 
+# Allow running this script from the repo root without installing the package.
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -31,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
-from bot_core import (
+from billiard_scores.bot_core import (
     week_start,
     load_csv_rows,
     write_csv_rows,

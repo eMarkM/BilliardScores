@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from bot_core import (
+from billiard_scores.bot_core import (
     week_start,
     warnings_for_rows,
     plausibility_check,
