@@ -708,22 +708,38 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # First extract team numbers so we can rename the file.
     team_home = None
     team_vis = None
+    cmd_teams = [
+        "python3",
+        str(HERE / "extract_nil_sample_to_csv.py"),
+        "--teams-only",
+        "--image",
+        str(image_path_tmp),
+    ]
     try:
-        cmd_teams = [
-            "python3",
-            str(HERE / "extract_nil_sample_to_csv.py"),
-            "--teams-only",
-            "--image",
-            str(image_path_tmp),
-        ]
         proc_teams = subprocess.run(cmd_teams, cwd=str(HERE), capture_output=True, text=True)
-        if proc_teams.returncode == 0:
+        if proc_teams.returncode != 0:
+            logger.info(
+                "team_extract_failed chat_id=%s user=%s file=%s rc=%s stdout=%s stderr=%s",
+                getattr(update.effective_chat, "id", None),
+                _user_label(update),
+                image_path_tmp.name,
+                proc_teams.returncode,
+                (proc_teams.stdout or "").strip()[:500],
+                (proc_teams.stderr or "").strip()[:500],
+            )
+        else:
             import json as _json
 
             teams = _json.loads((proc_teams.stdout or "").strip() or "{}")
             team_home = int(teams.get("home_team")) if "home_team" in teams else None
             team_vis = int(teams.get("visiting_team")) if "visiting_team" in teams else None
     except Exception:
+        logger.exception(
+            "team_extract_exception chat_id=%s user=%s file=%s",
+            getattr(update.effective_chat, "id", None),
+            _user_label(update),
+            image_path_tmp.name,
+        )
         # If team extraction fails, continue with the tmp filename.
         team_home = None
         team_vis = None
@@ -756,14 +772,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     proc = subprocess.run(cmd, cwd=str(HERE), capture_output=True, text=True)
 
-    stdout = proc.stdout.strip()
-    stderr = proc.stderr.strip()
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
 
     warn_text = ""
     if "WARNINGS:" in stdout:
         warn_text = stdout.split("WARNINGS:", 1)[1].strip()
 
     if proc.returncode != 0:
+        logger.info(
+            "extract_failed chat_id=%s user=%s file=%s rc=%s stdout=%s stderr=%s",
+            getattr(update.effective_chat, "id", None),
+            _user_label(update),
+            image_path.name,
+            proc.returncode,
+            stdout[:500],
+            stderr[:500],
+        )
         # Never dump stack traces to users. Keep it actionable.
         friendly = (
             "Sorry — I couldn’t extract reliable scores from that photo.\n\n"
@@ -794,10 +819,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     ok, problems = plausibility_check(rows, teams_count, team_home, team_vis)
     if not ok:
         logger.info(
-            "photo_rejected chat_id=%s user=%s file=%s problems=%s",
+            "photo_rejected chat_id=%s user=%s file=%s teams=%s-%s problems=%s",
             getattr(update.effective_chat, "id", None),
             _user_label(update),
             image_path.name,
+            team_home,
+            team_vis,
             "; ".join(problems),
         )
         details = "\n".join([f"- {p}" for p in problems])

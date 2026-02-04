@@ -37,7 +37,9 @@ from typing import Any, Dict, List, Tuple
 from PIL import Image, ImageOps
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parents[1]
+
 OUT_DIR = PROJECT_ROOT / "out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
