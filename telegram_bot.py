@@ -21,16 +21,25 @@ Run:
 
 from __future__ import annotations
 
-import csv
 import logging
 from logging.handlers import RotatingFileHandler
 import os
 import shlex
 import sqlite3
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+
+from bot_core import (
+    week_start,
+    load_csv_rows,
+    write_csv_rows,
+    warnings_for_rows,
+    plausibility_check,
+    apply_fixname,
+    apply_fixscore,
+)
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -132,9 +141,7 @@ def _db() -> sqlite3.Connection:
 
 
 def _week_start(dt: datetime) -> datetime:
-    # Monday 00:00 local
-    d0 = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    return d0 - timedelta(days=d0.weekday())
+    return week_start(dt)
 
 
 def _teams_count() -> int:
@@ -267,103 +274,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
-def _load_csv_rows(csv_path: Path) -> List[Dict[str, Any]]:
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        r = csv.DictReader(f)
-        rows = [dict(row) for row in r]
-    # normalize ints
-    for row in rows:
-        if "player_num" in row:
-            row["player_num"] = int(row["player_num"])
-        for k in list(row.keys()):
-            if k.startswith("game") or k == "total":
-                row[k] = int(row[k])
-    return rows
-
-
-def _write_csv_rows(csv_path: Path, rows: List[Dict[str, Any]]) -> None:
-    fields = ["player_num", "side", "player", "game1", "game2", "game3", "game4", "game5", "game6", "total"]
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        for row in rows:
-            w.writerow(row)
-
-
-def _warnings_for_rows(rows: List[Dict[str, Any]]) -> str:
-    warns: List[str] = []
-    for row in rows:
-        s = sum(int(row[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
-        if s != int(row["total"]):
-            pn = row.get("player_num", "?")
-            warns.append(
-                f"Total mismatch for P{pn} {row['side']}:{row['player']}: games sum={s} total={row['total']}"
-            )
-    return "\n".join(warns)
-
-
-def _plausibility_check(
-    rows: List[Dict[str, Any]],
-    teams_count: int,
-    home_team: Optional[int],
-    visiting_team: Optional[int],
-) -> Tuple[bool, List[str]]:
-    """Basic guard rails to avoid accepting random photos.
-
-    We don't need perfection—just catch obvious non-scoresheets.
-    """
-
-    problems: List[str] = []
-
-    if len(rows) != 6:
-        problems.append(f"Expected 6 player rows, got {len(rows)}")
-        return False, problems
-
-    # Team numbers should be present and in-range for a real sheet.
-    if home_team is None or visiting_team is None:
-        problems.append("Could not read Home/Visiting team numbers")
-    else:
-        if not (1 <= home_team <= teams_count):
-            problems.append(f"Home team {home_team} out of range 1..{teams_count}")
-        if not (1 <= visiting_team <= teams_count):
-            problems.append(f"Visiting team {visiting_team} out of range 1..{teams_count}")
-        if home_team == visiting_team:
-            problems.append("Home and Visiting team numbers are identical")
-
-    # Names should look like names: at least 4 non-trivial strings.
-    name_ok = 0
-    for r in rows:
-        name = (r.get("player") or "").strip()
-        if len(name) >= 2 and any(c.isalpha() for c in name):
-            name_ok += 1
-    if name_ok < 4:
-        problems.append(f"Too few readable player names ({name_ok}/6)")
-
-    # Totals should match sum of games for most rows.
-    mismatch = 0
-    for r in rows:
-        s = sum(int(r[g]) for g in ["game1", "game2", "game3", "game4", "game5", "game6"])
-        if s != int(r["total"]):
-            mismatch += 1
-    if mismatch > 2:
-        problems.append(f"Too many total mismatches ({mismatch}/6)")
-
-    # Games should be in range and not all identical junk.
-    distinct_scores = set()
-    out_of_range = 0
-    for r in rows:
-        for g in ["game1", "game2", "game3", "game4", "game5", "game6"]:
-            v = int(r[g])
-            if v < 0 or v > 10:
-                out_of_range += 1
-            distinct_scores.add(v)
-    if out_of_range:
-        problems.append(f"Found {out_of_range} out-of-range game values")
-    if len(distinct_scores) <= 1:
-        problems.append("All game values appear identical (likely not a scoresheet)")
-
-    ok = len(problems) == 0
-    return ok, problems
+# CSV + validation logic lives in bot_core.py (unit-tested)
 
 
 def _latest_pending_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, user_id: int):
@@ -586,7 +497,7 @@ async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         csv_p = Path(csv_path)
-        rows = _load_csv_rows(csv_p)
+        rows = load_csv_rows(csv_p)
 
         matches = [r for r in rows if int(r.get("player_num", -1)) == player_num]
         if not matches:
@@ -600,24 +511,24 @@ async def fixscore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.reply_text(f"Couldn't find player number {player_num} in the pending CSV.")
             return
 
-        # Update all matches (should be 1)
-        for r in matches:
-            old_val = r.get(field)
-            r[field] = value
-            logger.info(
-                "fixscore_ok upload_id=%s week_start=%s chat_id=%s user=%s P%s %s: %s -> %s",
-                upload_id,
-                ws_s,
-                c.id,
-                _user_label(update),
-                r.get("player_num"),
-                field,
-                old_val,
-                value,
-            )
+        ok2, err2 = apply_fixscore(rows, player_num, game_num, value)
+        if not ok2:
+            await msg.reply_text(err2)
+            return
 
-        warns = _warnings_for_rows(rows)
-        _write_csv_rows(csv_p, rows)
+        logger.info(
+            "fixscore_ok upload_id=%s week_start=%s chat_id=%s user=%s P%s game=%s value=%s",
+            upload_id,
+            ws_s,
+            c.id,
+            _user_label(update),
+            player_num,
+            game_num,
+            value,
+        )
+
+        warns = warnings_for_rows(rows)
+        write_csv_rows(csv_p, rows)
 
         con.execute(
             "UPDATE uploads SET warnings = ? WHERE id = ?",
@@ -689,7 +600,7 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         csv_p = Path(csv_path)
-        rows = _load_csv_rows(csv_p)
+        rows = load_csv_rows(csv_p)
 
         matches = [r for r in rows if int(r.get("player_num", -1)) == player_num]
         if not matches:
@@ -702,22 +613,23 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.reply_text(f"Couldn't find player number {player_num} in the pending CSV.")
             return
 
-        for r in matches:
-            old_name = r.get("player")
-            r["player"] = new_name
-            logger.info(
-                "fixname_ok upload_id=%s week_start=%s chat_id=%s user=%s P%s: %s -> %s",
-                upload_id,
-                ws_s,
-                c.id,
-                _user_label(update),
-                r.get("player_num"),
-                old_name,
-                new_name,
-            )
+        ok2, err2 = apply_fixname(rows, player_num, new_name)
+        if not ok2:
+            await msg.reply_text(err2)
+            return
 
-        warns = _warnings_for_rows(rows)
-        _write_csv_rows(csv_p, rows)
+        logger.info(
+            "fixname_ok upload_id=%s week_start=%s chat_id=%s user=%s P%s -> %s",
+            upload_id,
+            ws_s,
+            c.id,
+            _user_label(update),
+            player_num,
+            new_name,
+        )
+
+        warns = warnings_for_rows(rows)
+        write_csv_rows(csv_p, rows)
 
         con.execute(
             "UPDATE uploads SET warnings = ? WHERE id = ?",
@@ -869,7 +781,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Basic plausibility checks so random photos don't get a PENDING upload.
     try:
-        rows = _load_csv_rows(out_csv)
+        rows = load_csv_rows(out_csv)
     except Exception:
         await msg.reply_text(
             "Sorry — I got a CSV back but couldn’t read it. Please re-upload the scoresheet photo."
@@ -877,7 +789,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     teams_count = _teams_count()
-    ok, problems = _plausibility_check(rows, teams_count, team_home, team_vis)
+    ok, problems = plausibility_check(rows, teams_count, team_home, team_vis)
     if not ok:
         logger.info(
             "photo_rejected chat_id=%s user=%s file=%s problems=%s",
@@ -898,7 +810,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     upload_id = None
     con = _db()
     try:
-        ws = _week_start(datetime.now()).date().isoformat()
+        ws = week_start(datetime.now()).date().isoformat()
         u = update.effective_user
         c = update.effective_chat
         cur = con.execute(
