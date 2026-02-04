@@ -57,6 +57,10 @@ if not logger.handlers:
     logger.addHandler(console)
 
 
+# If a user already has a confirmed upload for the week, require /replace before accepting a new photo.
+REPLACE_ARMED: Dict[Tuple[int, int, str], bool] = {}
+
+
 HELP_TEXT = (
     "Send me a clear photo of the NIL scoresheet and I’ll reply with a CSV.\n\n"
     "Workflow:\n"
@@ -66,6 +70,7 @@ HELP_TEXT = (
     "Commands:\n"
     "- /confirm — confirm your latest pending upload for this week\n"
     "- /csv — get your confirmed CSV for this week\n"
+    "- /replace — allow replacing your confirmed upload (then send new photo)\n"
     "- /status — show team upload status since Monday\n"
     "- /fixscore — correct a score in your pending CSV\n"
     "- /fixname — correct a player name in your pending CSV\n"
@@ -386,6 +391,26 @@ def _latest_confirmed_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, u
         """,
         (ws_s, chat_id, user_id),
     ).fetchone()
+
+
+async def replace_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg:
+        return
+
+    u = update.effective_user
+    c = update.effective_chat
+    if not u or not c:
+        await msg.reply_text("Can’t determine user/chat.")
+        return
+
+    ws_s = _week_start(datetime.now()).date().isoformat()
+    # Arm replace for this week in this chat/user
+    REPLACE_ARMED[(c.id, u.id, ws_s)] = True
+    logger.info("replace_armed week_start=%s chat_id=%s user=%s", ws_s, c.id, _user_label(update))
+    await msg.reply_text(
+        "OK — send the updated scoresheet photo now and I’ll treat it as a replacement for this week’s confirmed upload."
+    )
 
 
 async def csv_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -721,21 +746,43 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await msg.chat.send_action(ChatAction.TYPING)
 
-    # Warn if user already has a confirmed upload this week.
+    # If user already has a confirmed upload this week, require /replace before processing.
     ws_s = _week_start(datetime.now()).date().isoformat()
     con_warn = _db()
     try:
-        confirmed = _latest_confirmed_upload(con_warn, ws_s, update.effective_chat.id if update.effective_chat else 0, update.effective_user.id if update.effective_user else 0)
+        confirmed = _latest_confirmed_upload(
+            con_warn,
+            ws_s,
+            update.effective_chat.id if update.effective_chat else 0,
+            update.effective_user.id if update.effective_user else 0,
+        )
     finally:
         con_warn.close()
 
     if confirmed:
         cid, created_at, img_path, csv_path = confirmed
-        await msg.reply_text(
-            f"Heads up: you already have a CONFIRMED upload for this week (upload #{cid}). "
-            "If you upload again, it will replace what your team is using unless you keep the old one. "
-            "Go ahead and send the new photo if you intend to update it."
-        )
+        armed = REPLACE_ARMED.pop((update.effective_chat.id, update.effective_user.id, ws_s), False)
+        if not armed:
+            logger.info(
+                "upload_blocked_needs_replace upload_id=%s week_start=%s chat_id=%s user=%s",
+                cid,
+                ws_s,
+                update.effective_chat.id,
+                _user_label(update),
+            )
+            await msg.reply_text(
+                f"You already have a CONFIRMED upload for this week (upload #{cid}).\n\n"
+                "If you want to replace it, run /replace and then send the new photo again."
+            )
+            return
+        else:
+            logger.info(
+                "upload_replace_allowed confirmed_upload_id=%s week_start=%s chat_id=%s user=%s",
+                cid,
+                ws_s,
+                update.effective_chat.id,
+                _user_label(update),
+            )
 
     # Get best resolution photo
     photo = msg.photo[-1]
@@ -925,6 +972,7 @@ def main() -> None:
     app.add_handler(CommandHandler(["help"], help_cmd))
     app.add_handler(CommandHandler(["confirm"], confirm))
     app.add_handler(CommandHandler(["csv"], csv_cmd))
+    app.add_handler(CommandHandler(["replace"], replace_cmd))
     app.add_handler(CommandHandler(["fixscore"], fixscore))
     app.add_handler(CommandHandler(["fixname"], fixname))
     app.add_handler(CommandHandler(["status"], status))
