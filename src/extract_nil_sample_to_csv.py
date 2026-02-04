@@ -92,15 +92,15 @@ VISITING_TEAM_BOX_BASE: Tuple[int, int, int, int] = (790, 105, 820, 140)
 HOME_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
     # Row 1 score band (David)
     (0, 215, 610, 285),
-    # Row 2 score band (Anthony) — moved down; previous box was hitting opponents row of row1
-    (0, 495, 610, 565),
+    # Row 2 score band (Anthony) — nudge down a bit more to fully clear opponents row above
+    (0, 515, 610, 595),
     # Row 3 score band (Ed)
-    (0, 675, 610, 745),
+    (0, 700, 610, 780),
 ]
 VISITING_ROW_BOXES_BASE: List[Tuple[int, int, int, int]] = [
     (620, 215, 1280, 285),
-    (620, 495, 1280, 565),
-    (620, 675, 1280, 745),
+    (620, 515, 1280, 595),
+    (620, 700, 1280, 780),
 ]
 
 
