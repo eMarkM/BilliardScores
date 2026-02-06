@@ -505,22 +505,30 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
     h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_w, 1))
     horiz = cv2.morphologyEx(bw, cv2.MORPH_OPEN, h_kernel, iterations=1)
 
+    # Connect broken grid-line segments (handwriting can punch holes in lines).
+    horiz = cv2.morphologyEx(
+        horiz,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, w // 20), 1)),
+        iterations=1,
+    )
+
     # Thicken slightly to make contours easier.
-    horiz = cv2.dilate(horiz, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1)), iterations=1)
+    horiz = cv2.dilate(horiz, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1)), iterations=1)
 
     contours, _ = cv2.findContours(horiz, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
 
-    # Candidate y positions for long horizontal lines.
+    # Candidate y positions for horizontal lines.
     ys: list[int] = []
-    min_len = int(w * 0.45)
+    min_len = int(w * 0.22)
     for c in contours:
         x, y, ww, hh = cv2.boundingRect(c)
-        if ww >= min_len and hh <= 10:
+        if ww >= min_len and hh <= 18:
             ys.append(y + hh // 2)
 
-    if len(ys) < 8:
+    if len(ys) < 10:
         return None
 
     ys.sort()
