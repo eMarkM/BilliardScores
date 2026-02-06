@@ -66,6 +66,13 @@ def warnings_for_rows(rows: List[Dict[str, Any]]) -> str:
     return "\n".join(warns)
 
 
+ALLOWED_GAME_SCORES = set(range(0, 8)) | {10}
+
+
+def is_valid_game_score(value: int) -> bool:
+    return int(value) in ALLOWED_GAME_SCORES
+
+
 def plausibility_check(
     rows: List[Dict[str, Any]],
     teams_count: int,
@@ -107,15 +114,15 @@ def plausibility_check(
         problems.append(f"Too many total mismatches ({mismatch}/6)")
 
     distinct_scores = set()
-    out_of_range = 0
+    invalid = 0
     for r in rows:
         for g in ["game1", "game2", "game3", "game4", "game5", "game6"]:
             v = int(r[g])
-            if v < 0 or v > 10:
-                out_of_range += 1
+            if not is_valid_game_score(v):
+                invalid += 1
             distinct_scores.add(v)
-    if out_of_range:
-        problems.append(f"Found {out_of_range} out-of-range game values")
+    if invalid:
+        problems.append(f"Found {invalid} invalid game values (valid: 0-7 or 10)")
     if len(distinct_scores) <= 1:
         problems.append("All game values appear identical (likely not a scoresheet)")
 
@@ -139,8 +146,8 @@ def apply_fixscore(rows: List[Dict[str, Any]], player_num: int, game_num: int, v
         field = "total"
     elif 1 <= game_num <= 6:
         field = f"game{game_num}"
-        if not (0 <= value <= 10):
-            return False, "Game values must be between 0 and 10"
+        if not is_valid_game_score(value):
+            return False, "Game values must be 0-7 or 10"
     else:
         return False, "game_num must be 1-6, or 0 for total"
 

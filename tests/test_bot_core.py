@@ -45,6 +45,14 @@ def test_plausibility_accepts_good():
     assert problems == []
 
 
+def test_plausibility_rejects_impossible_score_9():
+    rows = sample_rows()
+    rows[0]["game1"] = 9
+    ok, problems = plausibility_check(rows, teams_count=14, home_team=5, visiting_team=2)
+    assert not ok
+    assert any("invalid game" in p.lower() for p in problems)
+
+
 def test_plausibility_rejects_missing_teams():
     ok, problems = plausibility_check(sample_rows(), teams_count=14, home_team=None, visiting_team=None)
     assert not ok
@@ -63,6 +71,13 @@ def test_apply_fixscore_game():
     ok, err = apply_fixscore(rows, 4, 2, 10)
     assert ok
     assert rows[3]["game2"] == 10
+
+
+def test_apply_fixscore_rejects_9():
+    rows = sample_rows()
+    ok, err = apply_fixscore(rows, 4, 2, 9)
+    assert not ok
+    assert "0-7 or 10" in err
 
 
 def test_apply_fixscore_total():

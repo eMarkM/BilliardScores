@@ -71,12 +71,13 @@ IMPORTANT: This crop may also include the TOTAL box at the far right.
 
 Read the score row left-to-right and output STRICT JSON with keys:
 - player: string (copy the handwritten name as written)
-- game1..game6: integers 0-10 (the six GAME columns, in order)
+- game1..game6: integers 0-7 or 10 ONLY (the six GAME columns, in order)
 - total: integer (TOTAL column)
 
 Rules:
 - Output MUST be a single JSON object.
 - Only include those keys.
+- Valid game scores are ONLY 0,1,2,3,4,5,6,7,10. 8 and 9 are impossible.
 - total should equal sum(game1..game6). If it doesn't, re-check the digits.
 """
 
@@ -586,9 +587,21 @@ def extract_rows_by_cropping(
                     raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
 
                 player = str(obj.get("player", "")).strip().lower()
+
+                games = [
+                    int(obj.get("game1", -1)),
+                    int(obj.get("game2", -1)),
+                    int(obj.get("game3", -1)),
+                    int(obj.get("game4", -1)),
+                    int(obj.get("game5", -1)),
+                    int(obj.get("game6", -1)),
+                ]
+                invalid_scores = any(v in {8, 9} or v < 0 or (v > 7 and v != 10) for v in games)
+
                 # Heuristic: if we hit printed sub-rows, the model tends to output these tokens.
                 looks_wrong = (
-                    ("opponent" in player)
+                    invalid_scores
+                    or ("opponent" in player)
                     or ("opponents" in player)
                     or (player in {"wf", "wz", "tr", "br"})
                 )
