@@ -663,9 +663,19 @@ def extract_rows_by_cropping(
     def do_side_detected(side: str, band_side: dict, offset: int) -> bool:
         x1n = clamp01(band_side["x1"])
         x2n = clamp01(band_side["x2"])
+        last_good_y2n = header_y2
+
         for idx, r in enumerate(band_side["rows"], start=1):
             y1n = clamp01(r["y1"])
             y2n = clamp01(r["y2"])
+
+            # Enforce monotonic downward movement so later rows can't drift upward
+            # into the prior row's mark/opponents area.
+            height = max(0.02, y2n - y1n)
+            min_y1 = clamp01(last_good_y2n + 0.05)
+            if y1n < min_y1:
+                y1n = min_y1
+                y2n = clamp01(y1n + height)
 
             # Enforce: rows must start below the printed header row.
             if y1n < header_y2:
@@ -674,8 +684,8 @@ def extract_rows_by_cropping(
                 y2n = clamp01(y2n + dy)
 
             # Retry logic: if a band lands on "opponents"/"mark" rows, nudge downward.
-            step = 0.12
-            for attempt in range(3):
+            step = 0.06
+            for attempt in range(6):
                 box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
                 crop = img_norm.crop(box)
                 if debug_dir is not None:
@@ -712,6 +722,7 @@ def extract_rows_by_cropping(
                     obj["side"] = side
                     obj["player_num"] = offset + idx
                     rows.append(obj)
+                    last_good_y2n = y2n
                     break
 
                 # Nudge downward and retry
