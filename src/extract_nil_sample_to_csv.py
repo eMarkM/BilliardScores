@@ -475,93 +475,102 @@ def detect_boxscore_bbox(
 def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
     """Detect score row bands by locating printed table grid lines.
 
-    This is much more reliable than asking a model to guess row boundaries,
-    especially for row2/row3 where the "mark" and "opponents" sub-rows can
-    confuse band detection.
+    Uses OpenCV morphology to isolate the printed horizontal grid lines even in
+    the presence of handwriting and shadows.
 
     Returns normalized coordinates compatible with ROWBANDS_SCHEMA.
     """
 
-    im = img_boxscore.convert("L")
-    w, h = im.size
-
-    # Convert to a binary-ish measure of "ink". The printed grid lines are
-    # darker than the paper background.
-    thresh = 150
-    # Build horizontal projection: count dark pixels per y.
-    data = im.tobytes()  # row-major
-    counts = [0] * h
-    for y in range(h):
-        row = data[y * w : (y + 1) * w]
-        # Count pixels below threshold.
-        # Python loop is OK at this resolution (~1.2M pixels).
-        c = 0
-        for b in row:
-            if b < thresh:
-                c += 1
-        counts[y] = c
-
-    # Smooth a bit to merge thick lines.
-    smoothed = [0] * h
-    for y in range(h):
-        a = counts[y - 1] if y - 1 >= 0 else counts[y]
-        b = counts[y]
-        c = counts[y + 1] if y + 1 < h else counts[y]
-        smoothed[y] = (a + b + c) // 3
-
-    # Candidate horizontal lines: rows with a lot of dark pixels.
-    # Grid lines tend to span most of the table width.
-    min_dark = int(w * 0.35)
-    ys = [y for y, v in enumerate(smoothed) if v >= min_dark]
-    if not ys:
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception:
         return None
 
-    # Collapse consecutive y's into single line positions.
+    im = np.array(img_boxscore.convert("L"))
+    h, w = im.shape[:2]
+
+    # Adaptive threshold helps with uneven lighting / shadows.
+    bw = cv2.adaptiveThreshold(
+        im,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        15,
+    )
+
+    # Extract horizontal lines.
+    kernel_w = max(20, w // 30)
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_w, 1))
+    horiz = cv2.morphologyEx(bw, cv2.MORPH_OPEN, h_kernel, iterations=1)
+
+    # Thicken slightly to make contours easier.
+    horiz = cv2.dilate(horiz, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1)), iterations=1)
+
+    contours, _ = cv2.findContours(horiz, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    # Candidate y positions for long horizontal lines.
+    ys: list[int] = []
+    min_len = int(w * 0.45)
+    for c in contours:
+        x, y, ww, hh = cv2.boundingRect(c)
+        if ww >= min_len and hh <= 10:
+            ys.append(y + hh // 2)
+
+    if len(ys) < 8:
+        return None
+
+    ys.sort()
+
+    # Deduplicate/cluster ys.
     lines: list[int] = []
-    start = prev = ys[0]
+    cur: list[int] = [ys[0]]
     for y in ys[1:]:
-        if y == prev + 1:
-            prev = y
-            continue
-        lines.append((start + prev) // 2)
-        start = prev = y
-    lines.append((start + prev) // 2)
+        if abs(y - cur[-1]) <= 3:
+            cur.append(y)
+        else:
+            lines.append(int(sum(cur) / len(cur)))
+            cur = [y]
+    lines.append(int(sum(cur) / len(cur)))
 
-    lines = sorted(set(lines))
-
-    # Pick a header separator line near the top third.
+    # Pick a header separator line near where the printed header ends.
     target = int(h * 0.16)
     header = min(lines, key=lambda y: abs(y - target))
 
-    # Build bands between lines after header.
     after = [y for y in lines if y > header + 5]
     if len(after) < 6:
         return None
 
-    # Score rows are the taller bands; mark/opponents are shorter.
-    # Collect bands as (y_top, y_bot, height).
+    # Compute bands between consecutive lines.
     bands: list[tuple[int, int, int]] = []
     prev_y = header
     for y in after:
         height = y - prev_y
-        bands.append((prev_y, y, height))
+        if height > 0:
+            bands.append((prev_y, y, height))
         prev_y = y
 
-    # Choose first 3 bands that are "tall enough" to be score rows.
-    min_height = int(h * 0.08)  # ~75px at 960h
-    score_bands = [(a, b) for (a, b, hh) in bands if hh >= min_height]
+    # Prefer a repeating pattern: score (tall), mark (short), opponents (short)
+    # starting right after the header.
+    min_score_h = int(h * 0.07)
+    score_bands: list[tuple[int, int]] = []
+    for a, b, hh in bands:
+        if hh >= min_score_h:
+            score_bands.append((a, b))
+        if len(score_bands) == 3:
+            break
+
     if len(score_bands) < 3:
         return None
-
-    score_bands = score_bands[:3]
 
     def n(v: int, denom: int) -> float:
         return max(0.0, min(1.0, v / denom))
 
-    pad = 3
-    rows_norm = [
-        {"y1": n(a + pad, h), "y2": n(b - pad, h)} for (a, b) in score_bands
-    ]
+    pad = 2
+    rows_norm = [{"y1": n(a + pad, h), "y2": n(b - pad, h)} for (a, b) in score_bands]
 
     return {
         "header_y2": n(header, h),
