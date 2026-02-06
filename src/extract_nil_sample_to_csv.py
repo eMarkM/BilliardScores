@@ -30,11 +30,19 @@ import argparse
 import base64
 import csv
 import json
+import logging
 import os
 import sys
 from typing import Any, Dict, List, Tuple
 
 from PIL import Image, ImageOps
+
+logger = logging.getLogger("nilpoolbot.extractor")
+if not logger.handlers:
+    _h = logging.StreamHandler(stream=sys.stderr)
+    _h.setFormatter(logging.Formatter("EXTRACTOR %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+logger.setLevel(getattr(logging, (os.getenv("BILLIARDSCORES_LOG_LEVEL") or "INFO").upper(), logging.INFO))
 
 # Optional: help type-checkers; not required at runtime.
 
@@ -479,6 +487,8 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
     the presence of handwriting and shadows.
 
     Returns normalized coordinates compatible with ROWBANDS_SCHEMA.
+
+    Debug logging includes how many horizontal line candidates we found.
     """
 
     try:
@@ -527,6 +537,13 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
         x, y, ww, hh = cv2.boundingRect(c)
         if ww >= min_len and hh <= 18:
             ys.append(y + hh // 2)
+
+    logger.debug(
+        "grid_hlines_candidates=%s (min_len=%s) kernel_w=%s",
+        len(ys),
+        min_len,
+        kernel_w,
+    )
 
     if len(ys) < 10:
         return None
@@ -662,7 +679,14 @@ def extract_rows_by_cropping(
     # Prefer grid-line detection (deterministic) over model guessing.
     bands = detect_row_bands_by_grid(img_norm)
     if bands is None:
+        logger.debug("rowbands_grid_failed; falling back to model rowbands")
         bands = detect_row_bands(img_norm, model=model, client=vc)
+    else:
+        logger.debug(
+            "rowbands_grid_ok header_y2=%.3f rows=%s",
+            float(bands.get("header_y2", 0.0)),
+            [(r.get("y1"), r.get("y2")) for r in bands.get("home", {}).get("rows", [])],
+        )
 
     if debug_dir is not None and bands is not None:
         try:
@@ -705,6 +729,15 @@ def extract_rows_by_cropping(
             for attempt in range(6):
                 box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
                 crop = img_norm.crop(box)
+                logger.debug(
+                    "row_try side=%s idx=%s attempt=%s y1=%.3f y2=%.3f px=%s",
+                    side,
+                    idx,
+                    attempt + 1,
+                    y1n,
+                    y2n,
+                    box,
+                )
                 if debug_dir is not None:
                     suffix = "" if attempt == 0 else f"-try{attempt+1}"
                     crop.save(debug_dir / f"{side}-row{idx}{suffix}.png", format="PNG")
@@ -728,12 +761,31 @@ def extract_rows_by_cropping(
                 invalid_scores = any(v in {8, 9} or v < 0 or (v > 7 and v != 10) for v in games)
 
                 # Heuristic: if we hit printed sub-rows, the model tends to output these tokens.
-                looks_wrong = (
-                    invalid_scores
-                    or ("opponent" in player)
-                    or ("opponents" in player)
-                    or (player in {"wf", "wz", "tr", "br"})
-                )
+                hit_keywords = ("opponent" in player) or ("opponents" in player) or (player in {"wf", "wz", "tr", "br"})
+                looks_wrong = invalid_scores or hit_keywords
+
+                if looks_wrong:
+                    logger.debug(
+                        "row_reject side=%s idx=%s attempt=%s player=%r invalid_scores=%s hit_keywords=%s games=%s",
+                        side,
+                        idx,
+                        attempt + 1,
+                        player,
+                        invalid_scores,
+                        hit_keywords,
+                        games,
+                    )
+                else:
+                    logger.debug(
+                        "row_accept side=%s idx=%s attempt=%s player=%r games=%s total=%s",
+                        side,
+                        idx,
+                        attempt + 1,
+                        player,
+                        games,
+                        obj.get("total"),
+                    )
+
                 if not looks_wrong:
                     obj = dict(obj)
                     obj["side"] = side
@@ -747,6 +799,7 @@ def extract_rows_by_cropping(
                 y2n = clamp01(y2n + step)
             else:
                 # Could not find a plausible score row band.
+                logger.debug("row_exhausted side=%s idx=%s; could not find plausible score row", side, idx)
                 return False
 
         return True
@@ -759,6 +812,11 @@ def extract_rows_by_cropping(
 
         # If detected bands are flaky (common for row2/row3), fall back to the
         # legacy fixed boxes rather than returning garbage.
+        logger.debug(
+            "rowbands_detected_failed ok_home=%s ok_visiting=%s; falling back to fixed boxes",
+            ok_home,
+            ok_visiting,
+        )
         rows = []
 
     # Fallback to legacy fixed boxes.

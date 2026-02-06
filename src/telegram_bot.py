@@ -56,7 +56,8 @@ DB_PATH = PROJECT_ROOT / "bot.db"
 LOG_PATH = PROJECT_ROOT / "bot.log"
 
 logger = logging.getLogger("nilpoolbot")
-logger.setLevel(logging.INFO)
+log_level = (os.getenv("NILPOOLBOT_LOG_LEVEL") or "INFO").upper().strip()
+logger.setLevel(getattr(logging, log_level, logging.INFO))
 if not logger.handlers:
     handler = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -777,6 +778,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
+
+    # Always keep the extraction transcript available in logs when debugging.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "extract_run file=%s rc=%s debug_dir=%s\nstdout=<<<%s>>>\nstderr=<<<%s>>>",
+            image_path.name,
+            proc.returncode,
+            str(debug_dir),
+            stdout[:4000],
+            stderr[:4000],
+        )
 
     warn_text = ""
     if "WARNINGS:" in stdout:
