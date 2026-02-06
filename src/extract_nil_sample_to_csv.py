@@ -594,7 +594,8 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
     def n(v: int, denom: int) -> float:
         return max(0.0, min(1.0, v / denom))
 
-    pad = 2
+    # Padding is important: the row band should not bleed into the "mark" row below.
+    pad = 12
     rows_norm = [{"y1": n(a + pad, h), "y2": n(b - pad, h)} for (a, b) in score_bands]
 
     return {
@@ -761,7 +762,12 @@ def extract_rows_by_cropping(
                 invalid_scores = any(v in {8, 9} or v < 0 or (v > 7 and v != 10) for v in games)
 
                 # Heuristic: if we hit printed sub-rows, the model tends to output these tokens.
-                hit_keywords = ("opponent" in player) or ("opponents" in player) or (player in {"wf", "wz", "tr", "br"})
+                hit_keywords = (
+                    ("opponent" in player)
+                    or ("opponents" in player)
+                    or ("mark" in player)
+                    or (player in {"wf", "wz", "tr", "br"})
+                )
                 looks_wrong = invalid_scores or hit_keywords
 
                 if looks_wrong:
@@ -794,9 +800,14 @@ def extract_rows_by_cropping(
                     last_good_y2n = y2n
                     break
 
-                # Nudge downward and retry
-                y1n = clamp01(y1n + step)
-                y2n = clamp01(y2n + step)
+                # Nudge and retry. If we hit the printed "mark" line, we were
+                # slightly too low; try moving UP a bit. Otherwise, move down.
+                if "mark" in player:
+                    y1n = clamp01(y1n - step)
+                    y2n = clamp01(y2n - step)
+                else:
+                    y1n = clamp01(y1n + step)
+                    y2n = clamp01(y2n + step)
             else:
                 # Could not find a plausible score row band.
                 logger.debug("row_exhausted side=%s idx=%s; could not find plausible score row", side, idx)
