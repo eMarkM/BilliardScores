@@ -472,6 +472,104 @@ def detect_boxscore_bbox(
         return None
 
 
+def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
+    """Detect score row bands by locating printed table grid lines.
+
+    This is much more reliable than asking a model to guess row boundaries,
+    especially for row2/row3 where the "mark" and "opponents" sub-rows can
+    confuse band detection.
+
+    Returns normalized coordinates compatible with ROWBANDS_SCHEMA.
+    """
+
+    im = img_boxscore.convert("L")
+    w, h = im.size
+
+    # Convert to a binary-ish measure of "ink". The printed grid lines are
+    # darker than the paper background.
+    thresh = 150
+    # Build horizontal projection: count dark pixels per y.
+    data = im.tobytes()  # row-major
+    counts = [0] * h
+    for y in range(h):
+        row = data[y * w : (y + 1) * w]
+        # Count pixels below threshold.
+        # Python loop is OK at this resolution (~1.2M pixels).
+        c = 0
+        for b in row:
+            if b < thresh:
+                c += 1
+        counts[y] = c
+
+    # Smooth a bit to merge thick lines.
+    smoothed = [0] * h
+    for y in range(h):
+        a = counts[y - 1] if y - 1 >= 0 else counts[y]
+        b = counts[y]
+        c = counts[y + 1] if y + 1 < h else counts[y]
+        smoothed[y] = (a + b + c) // 3
+
+    # Candidate horizontal lines: rows with a lot of dark pixels.
+    # Grid lines tend to span most of the table width.
+    min_dark = int(w * 0.35)
+    ys = [y for y, v in enumerate(smoothed) if v >= min_dark]
+    if not ys:
+        return None
+
+    # Collapse consecutive y's into single line positions.
+    lines: list[int] = []
+    start = prev = ys[0]
+    for y in ys[1:]:
+        if y == prev + 1:
+            prev = y
+            continue
+        lines.append((start + prev) // 2)
+        start = prev = y
+    lines.append((start + prev) // 2)
+
+    lines = sorted(set(lines))
+
+    # Pick a header separator line near the top third.
+    target = int(h * 0.16)
+    header = min(lines, key=lambda y: abs(y - target))
+
+    # Build bands between lines after header.
+    after = [y for y in lines if y > header + 5]
+    if len(after) < 6:
+        return None
+
+    # Score rows are the taller bands; mark/opponents are shorter.
+    # Collect bands as (y_top, y_bot, height).
+    bands: list[tuple[int, int, int]] = []
+    prev_y = header
+    for y in after:
+        height = y - prev_y
+        bands.append((prev_y, y, height))
+        prev_y = y
+
+    # Choose first 3 bands that are "tall enough" to be score rows.
+    min_height = int(h * 0.08)  # ~75px at 960h
+    score_bands = [(a, b) for (a, b, hh) in bands if hh >= min_height]
+    if len(score_bands) < 3:
+        return None
+
+    score_bands = score_bands[:3]
+
+    def n(v: int, denom: int) -> float:
+        return max(0.0, min(1.0, v / denom))
+
+    pad = 3
+    rows_norm = [
+        {"y1": n(a + pad, h), "y2": n(b - pad, h)} for (a, b) in score_bands
+    ]
+
+    return {
+        "header_y2": n(header, h),
+        "home": {"x1": 0.0, "x2": 0.5, "rows": rows_norm},
+        "visiting": {"x1": 0.5, "x2": 1.0, "rows": rows_norm},
+    }
+
+
 def detect_row_bands(
     img_boxscore: Image.Image,
     model: str,
@@ -544,7 +642,11 @@ def extract_rows_by_cropping(
     w, h = img_norm.size
 
     # Anchor-based step: detect exact score-row bands inside the boxscore.
-    bands = detect_row_bands(img_norm, model=model, client=vc)
+    # Prefer grid-line detection (deterministic) over model guessing.
+    bands = detect_row_bands_by_grid(img_norm)
+    if bands is None:
+        bands = detect_row_bands(img_norm, model=model, client=vc)
+
     if debug_dir is not None and bands is not None:
         try:
             (debug_dir / "rowbands.json").write_text(json.dumps(bands, indent=2), encoding="utf-8")
