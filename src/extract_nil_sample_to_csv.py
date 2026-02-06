@@ -558,7 +558,7 @@ def extract_rows_by_cropping(
 
     header_y2 = clamp01(bands.get("header_y2", 0.0)) if isinstance(bands, dict) else 0.0
 
-    def do_side_detected(side: str, band_side: dict, offset: int):
+    def do_side_detected(side: str, band_side: dict, offset: int) -> bool:
         x1n = clamp01(band_side["x1"])
         x2n = clamp01(band_side["x2"])
         for idx, r in enumerate(band_side["rows"], start=1):
@@ -616,16 +616,20 @@ def extract_rows_by_cropping(
                 y1n = clamp01(y1n + step)
                 y2n = clamp01(y2n + step)
             else:
-                # If we exhausted retries, accept the last extraction result.
-                obj = dict(obj)
-                obj["side"] = side
-                obj["player_num"] = offset + idx
-                rows.append(obj)
+                # Could not find a plausible score row band.
+                return False
+
+        return True
 
     if isinstance(bands, dict) and "home" in bands and "visiting" in bands and "header_y2" in bands:
-        do_side_detected("home", bands["home"], offset=0)
-        do_side_detected("visiting", bands["visiting"], offset=3)
-        return rows
+        ok_home = do_side_detected("home", bands["home"], offset=0)
+        ok_visiting = do_side_detected("visiting", bands["visiting"], offset=3)
+        if ok_home and ok_visiting:
+            return rows
+
+        # If detected bands are flaky (common for row2/row3), fall back to the
+        # legacy fixed boxes rather than returning garbage.
+        rows = []
 
     # Fallback to legacy fixed boxes.
     def do_side_fixed(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
