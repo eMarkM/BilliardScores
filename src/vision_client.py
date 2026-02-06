@@ -31,12 +31,17 @@ class OpenAIVisionClient:
             response_format={"type": "json_schema", "json_schema": schema},
             messages=[
                 {
+                    # System messages can only contain text; put the image in a user message.
                     "role": "system",
+                    "content": prompt,
+                },
+                {
+                    "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": "Extract the scores from this image."},
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
-                }
+                },
             ],
             temperature=0,
         )

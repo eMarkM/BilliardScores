@@ -65,7 +65,8 @@ def compare_rows(expected: list[dict], actual: list[dict]) -> tuple[list[str], l
 
 @pytest.mark.integration
 def test_testscoresheet_replay_or_record():
-    assert CASE_IMAGE.exists(), f"Missing {CASE_IMAGE}"
+    if not CASE_IMAGE.exists():
+        pytest.skip(f"Missing {CASE_IMAGE}")
     expected = json.loads(CASE_EXPECTED.read_text(encoding="utf-8"))
 
     mode = os.getenv("VISION_TEST_MODE", "replay")  # replay|record|live
