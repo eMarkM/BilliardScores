@@ -102,7 +102,20 @@ HELP_TEXT = (
 
 
 def _db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+    # SQLite can transiently report "database is locked" when there are concurrent
+    # readers/writers (e.g., bot + sqlitebrowser). Give it a moment to wait.
+    con = sqlite3.connect(DB_PATH, timeout=10)
+
+    # Make locking behavior friendlier for concurrent reads while the bot writes.
+    # WAL is safe to enable repeatedly; it will be a no-op once set.
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # Very old SQLite builds may not support WAL; ignore and continue.
+        pass
+
+    con.execute("PRAGMA busy_timeout=5000")
+
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS uploads (
