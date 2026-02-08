@@ -695,6 +695,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 _user_label(update),
             )
 
+    await msg.reply_text("Processing your sheet, please hold for results.")
+
     # Get best resolution photo
     photo = msg.photo[-1]
     file = await context.bot.get_file(photo.file_id)
