@@ -93,7 +93,7 @@ HELP_TEXT = (
     "- Fix commands apply to your latest PENDING upload for this week.\n"
     "- Your CSV includes player numbers P1..P6. Use those for <player_num>.\n\n"
     "Photo tips (for best extraction):\n"
-    "- Fill the frame with the sheet\n"
+    "- Fill the frame with the boxscore porition of the sheet\n"
     "- Avoid shadows/glare\n"
     "- Hold camera parallel to paper\n"
     "- Make sure the DATE field (upper-left) is visible\n"
