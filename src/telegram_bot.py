@@ -663,6 +663,26 @@ async def fixname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await msg.reply_document(document=csv_p.open("rb"), filename=csv_p.name, caption=caption)
 
 
+async def _handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler.
+
+    - Log the exception server-side.
+    - Send a generic user-facing message (no stack traces / internals).
+    """
+
+    # Server-side logging (keep details out of chat)
+    logger.exception("unhandled_exception", exc_info=context.error)
+
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(
+                "Sorry — there was a server-side issue and processing couldn't be completed. Please try again."
+            )
+    except Exception:
+        # Never raise from the error handler.
+        logger.exception("error_handler_failed")
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     if not msg or not msg.photo:
@@ -956,6 +976,8 @@ def main() -> None:
     app.add_handler(CommandHandler(["pending"], pending))
     app.add_handler(CommandHandler(["recent"], recent))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    app.add_error_handler(_handle_error)
 
     app.run_polling(close_loop=False)
 
