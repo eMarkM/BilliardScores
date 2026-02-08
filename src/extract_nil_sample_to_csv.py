@@ -580,11 +580,22 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
 
     # Prefer a repeating pattern: score (tall), mark (short), opponents (short)
     # starting right after the header.
+    #
+    # The raw band heights often look like:
+    #   score (tall), mark (medium), opponents (medium), spacer (small), score (tall), ...
+    # So selecting the first 3 bands above a height threshold can accidentally grab
+    # the "mark" or "opponents" rows. Instead, we pick tall bands that are spaced
+    # out by at least 2 intervening bands.
     min_score_h = int(h * 0.07)
     score_bands: list[tuple[int, int]] = []
-    for a, b, hh in bands:
-        if hh >= min_score_h:
-            score_bands.append((a, b))
+    last_score_idx: int | None = None
+    for idx, (a, b, hh) in enumerate(bands):
+        if hh < min_score_h:
+            continue
+        if last_score_idx is not None and (idx - last_score_idx) < 3:
+            continue
+        score_bands.append((a, b))
+        last_score_idx = idx
         if len(score_bands) == 3:
             break
 
@@ -762,11 +773,24 @@ def extract_rows_by_cropping(
                 invalid_scores = any(v in {8, 9} or v < 0 or (v > 7 and v != 10) for v in games)
 
                 # Heuristic: if we hit printed sub-rows, the model tends to output these tokens.
+                # Also reject opponent-matchup strings like "1v4" / "4v1".
+                import re
+
+                has_alpha = any(ch.isalpha() for ch in player)
+
+                # e.g. "1v4", "4 v 1" (letters other than 'v' are not allowed)
+                opponent_like = re.fullmatch(r"\d+\s*v\s*\d+", player) is not None
+
+                # Avoid accepting cropped table artifacts that aren't a player name.
+                # (This does not have to be perfect; it is only used to decide whether
+                # to nudge the crop and retry.)
                 hit_keywords = (
                     ("opponent" in player)
                     or ("opponents" in player)
                     or ("mark" in player)
                     or (player in {"wf", "wz", "tr", "br"})
+                    or opponent_like
+                    or (not has_alpha)
                 )
                 looks_wrong = invalid_scores or hit_keywords
 
