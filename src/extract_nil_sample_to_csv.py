@@ -859,10 +859,29 @@ def extract_rows_by_cropping(
                 looks_wrong = invalid_scores or hit_keywords or wrong_index or keyword_flags
 
                 if looks_wrong:
+                    msg = (
+                        "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s "
+                        "has_opp=%s has_mark=%s invalid_scores=%s hit_keywords=%s games=%s"
+                    )
                     logger.debug(
-                        "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s has_opp=%s has_mark=%s invalid_scores=%s hit_keywords=%s games=%s",
+                        msg,
                         side,
                         idx,
+                        attempt + 1,
+                        player,
+                        row_index,
+                        player_num,
+                        has_opponents_word,
+                        has_mark_word,
+                        invalid_scores,
+                        hit_keywords,
+                        games,
+                    )
+                    # Also surface at INFO so it shows up in bot.log.
+                    logger.info(
+                        "DEBUG " + msg,
+                        side,
+                        player_num,
                         attempt + 1,
                         player,
                         row_index,
@@ -1056,6 +1075,8 @@ def main(argv: List[str] | None = None) -> int:
 
     try:
         debug_dir = Path(args.debug_dir).expanduser().resolve() if args.debug_dir else None
+        if debug_dir is not None:
+            debug_dir.mkdir(parents=True, exist_ok=True)
 
         if args.teams_only:
             teams = extract_team_numbers(image_path, model=args.model, client=OpenAIVisionClient(), debug_dir=debug_dir)

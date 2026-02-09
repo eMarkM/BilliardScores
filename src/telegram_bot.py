@@ -815,7 +815,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Surface extractor progress lines into bot.log (even when bot log level is INFO).
     # The extractor writes to stderr with prefix: "EXTRACTOR <LEVEL> ...".
     for line in (stderr or "").splitlines():
-        if "DEBUG extract_" in line:
+        if "DEBUG extract_" in line or "DEBUG row_reject" in line:
             logger.info("%s", line)
 
     # Keep full transcript available when bot log level is DEBUG.
