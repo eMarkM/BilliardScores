@@ -84,8 +84,8 @@ IMPORTANT: This crop may include parts of adjacent rows (like the "mark" line) a
 
 Output STRICT JSON with keys:
 - row_index: integer (the small printed row number 1-6 in the lower-left of the player-name box)
-- has_opponents_word: boolean (true if the printed word "opponents" appears anywhere in this crop)
-- has_mark_word: boolean (true if the printed word "mark" appears anywhere in this crop)
+- has_opponents_word: boolean (optional; true if the printed word "opponents" appears anywhere in this crop)
+- has_mark_word: boolean (optional; true if the printed word "mark" appears anywhere in this crop)
 - player: string (copy the handwritten name as written)
 - game1..game6: integers 0-7 or 10 ONLY (the six GAME columns, in order)
 - total: integer (TOTAL column)
@@ -260,8 +260,6 @@ ROW_SCHEMA = {
         },
         "required": [
             "row_index",
-            "has_opponents_word",
-            "has_mark_word",
             "player",
             "game1",
             "game2",
@@ -852,7 +850,11 @@ def extract_rows_by_cropping(
                     or (not has_alpha)
                 )
 
-                wrong_index = row_index != player_num
+                # Row index is great when the model can read it, but sometimes it
+                # returns -1 even when the crop is correct. Only hard-reject when
+                # it confidently reads a DIFFERENT positive index.
+                wrong_index = (row_index not in {-1, player_num})
+
                 keyword_flags = has_opponents_word or has_mark_word
                 looks_wrong = invalid_scores or hit_keywords or wrong_index or keyword_flags
 
