@@ -741,9 +741,21 @@ def extract_rows_by_cropping(
                 y1n = clamp01(y1n + dy)
                 y2n = clamp01(y2n + dy)
 
-            # Retry logic: if a band lands on "opponents"/"mark" rows, nudge downward.
+            # Retry logic: scan downward in fixed steps until we land on the actual
+            # player score band (anchored by the small printed row number in the
+            # lower-left of the player-name box).
             step = 0.06
-            for attempt in range(5):
+            max_attempts = 15
+            player_num = offset + idx
+
+            for attempt in range(max_attempts):
+                logger.debug(
+                    "extract_attempt side=%s player_num=%s attempt=%s",
+                    side,
+                    player_num,
+                    attempt + 1,
+                )
+
                 box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
                 crop = img_norm.crop(box)
                 logger.debug(
@@ -786,9 +798,6 @@ def extract_rows_by_cropping(
                 # e.g. "1v4", "4 v 1" (letters other than 'v' are not allowed)
                 opponent_like = re.fullmatch(r"\d+\s*v\s*\d+", player) is not None
 
-                # Avoid accepting cropped table artifacts that aren't a player name.
-                # (This does not have to be perfect; it is only used to decide whether
-                # to nudge the crop and retry.)
                 hit_keywords = (
                     ("opponent" in player)
                     or ("opponents" in player)
@@ -822,24 +831,31 @@ def extract_rows_by_cropping(
                     )
 
                 if not looks_wrong:
+                    logger.debug(
+                        "extract_found side=%s player_num=%s attempt=%s player=%r",
+                        side,
+                        player_num,
+                        attempt + 1,
+                        player,
+                    )
                     obj = dict(obj)
                     obj["side"] = side
-                    obj["player_num"] = offset + idx
+                    obj["player_num"] = player_num
                     rows.append(obj)
                     last_good_y2n = y2n
                     break
 
-                # Nudge and retry. If we hit the printed "mark" line, we were
-                # slightly too low; try moving UP a bit. Otherwise, move down.
-                if "mark" in player:
-                    y1n = clamp01(y1n - step)
-                    y2n = clamp01(y2n - step)
-                else:
-                    y1n = clamp01(y1n + step)
-                    y2n = clamp01(y2n + step)
+                # Scan downward.
+                y1n = clamp01(y1n + step)
+                y2n = clamp01(y2n + step)
             else:
                 # Could not find a plausible score row band.
-                logger.debug("row_exhausted side=%s idx=%s; could not find plausible score row", side, idx)
+                logger.debug(
+                    "extract_failed side=%s player_num=%s attempts=%s",
+                    side,
+                    player_num,
+                    max_attempts,
+                )
                 return False
 
         return True
