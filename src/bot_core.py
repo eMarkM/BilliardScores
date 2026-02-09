@@ -158,3 +158,36 @@ def apply_fixscore(rows: List[Dict[str, Any]], player_num: int, game_num: int, v
     for r in matches:
         r[field] = value
     return True, ""
+
+
+def build_processed_caption(
+    *,
+    image_filename: str,
+    message_id: Optional[str],
+    home_team: Optional[int],
+    warn_text: Optional[str],
+) -> str:
+    """Human-friendly caption for the CSV reply.
+
+    Keep this in bot_core so it stays easy to unit-test.
+    """
+
+    if home_team is None:
+        header = "Scoresheet has been successfully processed."
+    else:
+        header = f"Team {home_team} has been successfully processed."
+
+    body = (
+        f"{header}\n"
+        "Please compare to the physical sheet and send /confirm if correct.\n"
+        "Use /fixname and /fixscore to fix errors.\n\n"
+        f"Processed photo: {image_filename}"
+    )
+
+    if message_id:
+        body += f"\n[message_id: {message_id}]"
+
+    if warn_text:
+        body += f"\n\nWarnings:\n{warn_text}"
+
+    return body

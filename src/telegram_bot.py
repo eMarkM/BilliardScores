@@ -39,6 +39,7 @@ from bot_core import (
     plausibility_check,
     apply_fixname,
     apply_fixscore,
+    build_processed_caption,
 )
 
 from telegram import Update
@@ -933,18 +934,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "yes" if warn_text else "no",
     )
 
-    teams_line = ""
-    if team_home is not None and team_vis is not None:
-        teams_line = f"Teams: Home Team {team_home} vs Visiting Team {team_vis}\n"
-
-    caption = (
-        f"Processed photo: {image_path.name}\n"
-        f"{teams_line}"
-        f"Parsed CSV (PENDING upload #{upload_id}).\n"
-        "Please /confirm if this is good; otherwise fix issues and re-upload."
+    caption = build_processed_caption(
+        image_filename=image_path.name,
+        # Keep the message_id in the response so admins can reference what was processed.
+        message_id=str(getattr(msg, "message_id", "")) or None,
+        home_team=team_home,
+        warn_text=warn_text,
     )
-    if warn_text:
-        caption += f"\n\nWarnings:\n{warn_text}"
 
     await msg.reply_document(document=out_csv.open("rb"), filename=out_csv.name, caption=caption)
 
