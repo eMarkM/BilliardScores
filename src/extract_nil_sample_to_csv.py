@@ -741,7 +741,9 @@ def extract_rows_by_cropping(
             # Enforce monotonic downward movement so later rows can't drift upward
             # into the prior row's mark/opponents area.
             height = max(0.02, y2n - y1n)
-            min_y1 = clamp01(last_good_y2n + 0.05)
+            # Keep rows moving downward, but don't skip too far (otherwise we can
+            # land on the printed opponents/mark sub-rows).
+            min_y1 = clamp01(last_good_y2n + max(0.005, height * 0.10))
             if y1n < min_y1:
                 y1n = min_y1
                 y2n = clamp01(y1n + height)
@@ -756,7 +758,7 @@ def extract_rows_by_cropping(
             # player score band (anchored by the small printed row number in the
             # lower-left of the player-name box).
             step = 0.06
-            max_attempts = 15
+            max_attempts = 12
             player_num = offset + idx
 
             for attempt in range(max_attempts):
@@ -777,6 +779,19 @@ def extract_rows_by_cropping(
                 crop_y2n = clamp01(y2n + pad * 0.75)
 
                 box = (int(crop_x1n * w), int(crop_y1n * h), int(crop_x2n * w), int(crop_y2n * h))
+
+                # Guard rails: if we hit the bottom of the image, clamp can cause
+                # nearly-zero-height crops (e.g. 4px tall). Bail out early.
+                if box[3] - box[1] < 24 or box[2] - box[0] < 200:
+                    logger.info(
+                        "DEBUG extract_failed side=%s player_num=%s attempts=%s (degenerate crop box=%s)",
+                        side,
+                        player_num,
+                        attempt + 1,
+                        box,
+                    )
+                    return False
+
                 crop = img_norm.crop(box)
                 logger.debug(
                     "row_try side=%s idx=%s attempt=%s y1=%.3f y2=%.3f crop_y1=%.3f crop_y2=%.3f px=%s",
