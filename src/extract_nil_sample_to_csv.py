@@ -739,6 +739,14 @@ def extract_rows_by_cropping(
             # Enforce monotonic downward movement so later rows can't drift upward
             # into the prior row's mark/opponents area.
             height = max(0.02, y2n - y1n)
+
+            # If row-band detection is slightly off (common on the visiting side),
+            # prefer continuity from the last accepted row to avoid starting inside
+            # "mark"/"opponents" sub-rows.
+            if idx > 1:
+                y1n = max(y1n, clamp01(last_good_y2n + height * 0.85))
+                y2n = clamp01(y1n + height)
+
             # Keep rows moving downward, but don't skip too far (otherwise we can
             # land on the printed opponents/mark sub-rows).
             min_y1 = clamp01(last_good_y2n + max(0.005, height * 0.10))
@@ -755,8 +763,8 @@ def extract_rows_by_cropping(
             # Retry logic: scan downward in fixed steps until we land on the actual
             # player score band (anchored by the small printed row number in the
             # lower-left of the player-name box).
-            step = 0.06
-            max_attempts = 12
+            step = 0.03
+            max_attempts = 20
             player_num = offset + idx
 
             for attempt in range(max_attempts):
