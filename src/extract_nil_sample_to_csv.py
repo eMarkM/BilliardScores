@@ -84,6 +84,8 @@ IMPORTANT: This crop may include parts of adjacent rows (like the "mark" line) a
 
 Output STRICT JSON with keys:
 - row_index: integer (the small printed row number 1-6 in the lower-left of the player-name box)
+- has_opponents_word: boolean (true if the printed word "opponents" appears anywhere in this crop)
+- has_mark_word: boolean (true if the printed word "mark" appears anywhere in this crop)
 - player: string (copy the handwritten name as written)
 - game1..game6: integers 0-7 or 10 ONLY (the six GAME columns, in order)
 - total: integer (TOTAL column)
@@ -92,6 +94,7 @@ Rules:
 - Output MUST be a single JSON object.
 - Only include those keys.
 - If you cannot clearly see the printed row_index, set row_index to -1.
+- If you can see "opponents" or "mark" in the crop, set the corresponding boolean true.
 - Valid game scores are ONLY 0,1,2,3,4,5,6,7,10. 8 and 9 are impossible.
 - total should equal sum(game1..game6). If it doesn't, re-check the digits.
 """
@@ -244,6 +247,8 @@ ROW_SCHEMA = {
         "additionalProperties": False,
         "properties": {
             "row_index": {"type": "integer"},
+            "has_opponents_word": {"type": "boolean"},
+            "has_mark_word": {"type": "boolean"},
             "player": {"type": "string"},
             "game1": {"type": "integer"},
             "game2": {"type": "integer"},
@@ -255,6 +260,8 @@ ROW_SCHEMA = {
         },
         "required": [
             "row_index",
+            "has_opponents_word",
+            "has_mark_word",
             "player",
             "game1",
             "game2",
@@ -788,6 +795,8 @@ def extract_rows_by_cropping(
 
                 player = str(obj.get("player", "")).strip().lower()
                 row_index = int(obj.get("row_index", -999))
+                has_opponents_word = bool(obj.get("has_opponents_word", False))
+                has_mark_word = bool(obj.get("has_mark_word", False))
 
                 games = [
                     int(obj.get("game1", -1)),
@@ -818,17 +827,20 @@ def extract_rows_by_cropping(
                 )
 
                 wrong_index = row_index != player_num
-                looks_wrong = invalid_scores or hit_keywords or wrong_index
+                keyword_flags = has_opponents_word or has_mark_word
+                looks_wrong = invalid_scores or hit_keywords or wrong_index or keyword_flags
 
                 if looks_wrong:
                     logger.debug(
-                        "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s invalid_scores=%s hit_keywords=%s games=%s",
+                        "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s has_opp=%s has_mark=%s invalid_scores=%s hit_keywords=%s games=%s",
                         side,
                         idx,
                         attempt + 1,
                         player,
                         row_index,
                         player_num,
+                        has_opponents_word,
+                        has_mark_word,
                         invalid_scores,
                         hit_keywords,
                         games,

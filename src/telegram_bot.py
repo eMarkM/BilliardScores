@@ -812,7 +812,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
 
-    # Always keep the extraction transcript available in logs when debugging.
+    # Surface extractor progress lines into bot.log (even when bot log level is INFO).
+    # The extractor writes to stderr with prefix: "EXTRACTOR <LEVEL> ...".
+    for line in (stderr or "").splitlines():
+        if "DEBUG extract_" in line:
+            logger.info("%s", line)
+
+    # Keep full transcript available when bot log level is DEBUG.
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
             "extract_run file=%s rc=%s debug_dir=%s\nstdout=<<<%s>>>\nstderr=<<<%s>>>",
