@@ -73,7 +73,7 @@ ROW_PROMPT = """You are extracting ONE player SCORE row from a pool league score
 This is a sports scoresheet (not an ID document). Do NOT identify real people beyond copying the handwritten name as it appears.
 
 Key layout cue:
-- In the PLAYER NAME box, there is often a small printed row index number in the lower-left corner (1,2,3,4,5,6), right above the printed "mark BR TR" line.
+- In the PLAYER NAME box, there is a small printed row index number in the lower-left corner (1,2,3,4,5,6), right above the printed "mark BR TR" line.
 - The handwritten player name starts immediately to the RIGHT of that small number.
 - Ignore any printed helper text like "mark", "BR", "TR", "opponents", and ignore any matchup strings like "1v4".
 
@@ -82,7 +82,8 @@ IMPORTANT: This crop may include parts of adjacent rows (like the "mark" line) a
 - total is the separate TOTAL column at the far right
 - Do NOT copy the total into game6.
 
-Read the score row left-to-right and output STRICT JSON with keys:
+Output STRICT JSON with keys:
+- row_index: integer (the small printed row number 1-6 in the lower-left of the player-name box)
 - player: string (copy the handwritten name as written)
 - game1..game6: integers 0-7 or 10 ONLY (the six GAME columns, in order)
 - total: integer (TOTAL column)
@@ -90,6 +91,7 @@ Read the score row left-to-right and output STRICT JSON with keys:
 Rules:
 - Output MUST be a single JSON object.
 - Only include those keys.
+- If you cannot clearly see the printed row_index, set row_index to -1.
 - Valid game scores are ONLY 0,1,2,3,4,5,6,7,10. 8 and 9 are impossible.
 - total should equal sum(game1..game6). If it doesn't, re-check the digits.
 """
@@ -241,6 +243,7 @@ ROW_SCHEMA = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "row_index": {"type": "integer"},
             "player": {"type": "string"},
             "game1": {"type": "integer"},
             "game2": {"type": "integer"},
@@ -251,6 +254,7 @@ ROW_SCHEMA = {
             "total": {"type": "integer"},
         },
         "required": [
+            "row_index",
             "player",
             "game1",
             "game2",
@@ -749,8 +753,8 @@ def extract_rows_by_cropping(
             player_num = offset + idx
 
             for attempt in range(max_attempts):
-                logger.debug(
-                    "extract_attempt side=%s player_num=%s attempt=%s",
+                logger.info(
+                    "DEBUG extract_attempt side=%s player_num=%s attempt=%s",
                     side,
                     player_num,
                     attempt + 1,
@@ -773,11 +777,17 @@ def extract_rows_by_cropping(
 
                 crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
                 data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-                obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
+                per_row_prompt = (
+                    ROW_PROMPT
+                    + f"\n\nYou are currently looking for row_index={player_num}. "
+                    "Only accept this crop if the printed row_index matches exactly."
+                )
+                obj = vision_json(vc, per_row_prompt, data_url, model=model, schema=ROW_SCHEMA)
                 if not isinstance(obj, dict):
                     raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
 
                 player = str(obj.get("player", "")).strip().lower()
+                row_index = int(obj.get("row_index", -999))
 
                 games = [
                     int(obj.get("game1", -1)),
@@ -806,33 +816,38 @@ def extract_rows_by_cropping(
                     or opponent_like
                     or (not has_alpha)
                 )
-                looks_wrong = invalid_scores or hit_keywords
+
+                wrong_index = row_index != player_num
+                looks_wrong = invalid_scores or hit_keywords or wrong_index
 
                 if looks_wrong:
                     logger.debug(
-                        "row_reject side=%s idx=%s attempt=%s player=%r invalid_scores=%s hit_keywords=%s games=%s",
+                        "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s invalid_scores=%s hit_keywords=%s games=%s",
                         side,
                         idx,
                         attempt + 1,
                         player,
+                        row_index,
+                        player_num,
                         invalid_scores,
                         hit_keywords,
                         games,
                     )
                 else:
                     logger.debug(
-                        "row_accept side=%s idx=%s attempt=%s player=%r games=%s total=%s",
+                        "row_accept side=%s idx=%s attempt=%s player=%r row_index=%s games=%s total=%s",
                         side,
                         idx,
                         attempt + 1,
                         player,
+                        row_index,
                         games,
                         obj.get("total"),
                     )
 
                 if not looks_wrong:
-                    logger.debug(
-                        "extract_found side=%s player_num=%s attempt=%s player=%r",
+                    logger.info(
+                        "DEBUG extract_found side=%s player_num=%s attempt=%s player=%r",
                         side,
                         player_num,
                         attempt + 1,
@@ -850,8 +865,8 @@ def extract_rows_by_cropping(
                 y2n = clamp01(y2n + step)
             else:
                 # Could not find a plausible score row band.
-                logger.debug(
-                    "extract_failed side=%s player_num=%s attempts=%s",
+                logger.info(
+                    "DEBUG extract_failed side=%s player_num=%s attempts=%s",
                     side,
                     player_num,
                     max_attempts,
