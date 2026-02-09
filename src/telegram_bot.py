@@ -47,6 +47,31 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 
+def _friendly_extract_failure(stderr: str) -> str:
+    import re
+
+    # Extractor raises errors like: "ERROR: Extraction failed: Could not process home player 1"
+    m = re.search(r"Could not process\s+(home|visiting)\s+player\s+(\d+)", stderr, flags=re.IGNORECASE)
+    if m:
+        side = m.group(1).lower()
+        player_num = int(m.group(2))
+        return (
+            f"Sorry — I couldn’t extract {side} team player {player_num} from that photo.\n\n"
+            "Please try again with:\n"
+            "- less glare/shadow\n"
+            "- photo straight-on\n"
+            "- fill the frame with the box scores"
+        )
+
+    return (
+        "Sorry — I couldn’t extract reliable scores from that photo.\n\n"
+        "Please try again with:\n"
+        "- less glare/shadow\n"
+        "- photo straight-on\n"
+        "- fill the frame with the box scores"
+    )
+
+
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent
 
@@ -845,15 +870,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             stderr[:500],
         )
         # Never dump stack traces to users. Keep it actionable.
-        friendly = (
-            "Sorry — I couldn’t extract reliable scores from that photo.\n\n"
-            "Please try again with:\n"
-            "- less glare/shadow\n"
-            "- photo straight-on\n"
-            "- fill frame with the sheet\n\n"
-            "If this keeps happening, send the same photo again and I’ll adjust the parser."
-        )
-        await msg.reply_text(friendly)
+        await msg.reply_text(_friendly_extract_failure(stderr))
         return
 
     out_csv = PROJECT_ROOT / "out" / f"{image_path.stem}.csv"
