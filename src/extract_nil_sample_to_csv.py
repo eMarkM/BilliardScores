@@ -948,36 +948,12 @@ def extract_rows_by_cropping(
         if ok_home and ok_visiting:
             return rows
 
-        # If detected bands are flaky (common for row2/row3), fall back to the
-        # legacy fixed boxes rather than returning garbage.
-        logger.debug(
-            "rowbands_detected_failed ok_home=%s ok_visiting=%s; falling back to fixed boxes",
-            ok_home,
-            ok_visiting,
+        # Stop early if we can't find all rows within max_attempts. Falling back
+        # to fixed boxes produces confusing behavior (keeps scanning / wrong rows).
+        raise RuntimeError(
+            f"Could not reliably extract all score rows (ok_home={ok_home} ok_visiting={ok_visiting}). "
+            "Please retake the photo straight-on and ensure the full boxscore is visible."
         )
-        rows = []
-
-    # Fallback to legacy fixed boxes.
-    def do_side_fixed(side: str, boxes_base: List[Tuple[int, int, int, int]], offset: int):
-        for idx, b in enumerate(boxes_base, start=1):
-            box = b  # already in BASE_W/BASE_H coords because img_norm is normalized
-            crop = img_norm.crop(box)
-            if debug_dir is not None:
-                crop.save(debug_dir / f"{side}-row{idx}.png", format="PNG")
-
-            crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
-            data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-            obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
-            if not isinstance(obj, dict):
-                raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
-            obj = dict(obj)
-            obj["side"] = side
-            obj["player_num"] = offset + idx
-            rows.append(obj)
-
-    do_side_fixed("home", HOME_ROW_BOXES_BASE, offset=0)
-    do_side_fixed("visiting", VISITING_ROW_BOXES_BASE, offset=3)
-    return rows
 
 
 def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
