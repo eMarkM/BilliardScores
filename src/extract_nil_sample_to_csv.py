@@ -664,6 +664,10 @@ def detect_row_bands(
         return None
 
 
+class RowExtractError(RuntimeError):
+    pass
+
+
 def extract_rows_by_cropping(
     image_path: Path,
     model: str,
@@ -789,6 +793,7 @@ def extract_rows_by_cropping(
                 # Guard rails: if we hit the bottom of the image, clamp can cause
                 # nearly-zero-height crops (e.g. 4px tall). Bail out early.
                 if box[3] - box[1] < 24 or box[2] - box[0] < 200:
+                    msg = f"Could not process {side} player {player_num} (degenerate crop)"
                     logger.info(
                         "DEBUG extract_failed side=%s player_num=%s attempts=%s (degenerate crop box=%s)",
                         side,
@@ -796,7 +801,7 @@ def extract_rows_by_cropping(
                         attempt + 1,
                         box,
                     )
-                    return False
+                    raise RowExtractError(msg)
 
                 crop = img_norm.crop(box)
                 logger.debug(
@@ -938,22 +943,15 @@ def extract_rows_by_cropping(
                     player_num,
                     max_attempts,
                 )
-                return False
+                raise RowExtractError(f"Could not process {side} player {player_num}")
 
         return True
 
     if isinstance(bands, dict) and "home" in bands and "visiting" in bands and "header_y2" in bands:
-        ok_home = do_side_detected("home", bands["home"], offset=0)
-        ok_visiting = do_side_detected("visiting", bands["visiting"], offset=3)
-        if ok_home and ok_visiting:
-            return rows
-
-        # Stop early if we can't find all rows within max_attempts. Falling back
-        # to fixed boxes produces confusing behavior (keeps scanning / wrong rows).
-        raise RuntimeError(
-            f"Could not reliably extract all score rows (ok_home={ok_home} ok_visiting={ok_visiting}). "
-            "Please retake the photo straight-on and ensure the full boxscore is visible."
-        )
+        # If home fails, raise immediately (do not continue to visiting).
+        do_side_detected("home", bands["home"], offset=0)
+        do_side_detected("visiting", bands["visiting"], offset=3)
+        return rows
 
 
 def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
