@@ -767,15 +767,26 @@ def extract_rows_by_cropping(
                     attempt + 1,
                 )
 
-                box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
+                # Add a little padding so we reliably include the full row band,
+                # including the tiny printed row index number and the top/bottom borders.
+                base_h = max(0.02, y2n - y1n)
+                pad = max(0.01, base_h * 0.25)
+                crop_x1n = clamp01(x1n - 0.01)
+                crop_x2n = clamp01(x2n + 0.00)
+                crop_y1n = clamp01(y1n - pad * 0.35)
+                crop_y2n = clamp01(y2n + pad * 0.75)
+
+                box = (int(crop_x1n * w), int(crop_y1n * h), int(crop_x2n * w), int(crop_y2n * h))
                 crop = img_norm.crop(box)
                 logger.debug(
-                    "row_try side=%s idx=%s attempt=%s y1=%.3f y2=%.3f px=%s",
+                    "row_try side=%s idx=%s attempt=%s y1=%.3f y2=%.3f crop_y1=%.3f crop_y2=%.3f px=%s",
                     side,
                     idx,
                     attempt + 1,
                     y1n,
                     y2n,
+                    crop_y1n,
+                    crop_y2n,
                     box,
                 )
                 if debug_dir is not None:
