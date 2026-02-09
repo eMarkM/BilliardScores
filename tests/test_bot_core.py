@@ -66,11 +66,14 @@ def test_apply_fixname():
     assert rows[-1]["player"] == "Anthony"
 
 
-def test_apply_fixscore_game():
+def test_apply_fixscore_game_updates_total():
     rows = sample_rows()
+    before_total = rows[3]["total"]
+
     ok, err = apply_fixscore(rows, 4, 2, 10)
     assert ok
     assert rows[3]["game2"] == 10
+    assert rows[3]["total"] == before_total + 9  # game2 changed from 1 -> 10
 
 
 def test_apply_fixscore_rejects_9():

@@ -157,6 +157,11 @@ def apply_fixscore(rows: List[Dict[str, Any]], player_num: int, game_num: int, v
 
     for r in matches:
         r[field] = value
+        # Keep total consistent when individual game values change.
+        # (If the caller explicitly edits total via game_num=0, respect that.)
+        if field.startswith("game"):
+            r["total"] = sum(int(r[f"game{i}"]) for i in range(1, 7))
+
     return True, ""
 
 
