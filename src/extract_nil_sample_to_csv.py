@@ -72,7 +72,12 @@ ROW_PROMPT = """You are extracting ONE player SCORE row from a pool league score
 
 This is a sports scoresheet (not an ID document). Do NOT identify real people beyond copying the handwritten name as it appears.
 
-IMPORTANT: This crop may also include the TOTAL box at the far right.
+Key layout cue:
+- In the PLAYER NAME box, there is often a small printed row index number in the lower-left corner (1,2,3,4,5,6), right above the printed "mark BR TR" line.
+- The handwritten player name starts immediately to the RIGHT of that small number.
+- Ignore any printed helper text like "mark", "BR", "TR", "opponents", and ignore any matchup strings like "1v4".
+
+IMPORTANT: This crop may include parts of adjacent rows (like the "mark" line) and may include the TOTAL box at the far right.
 - game1..game6 are the SIX game columns labeled 1,2,3,4,5,6
 - total is the separate TOTAL column at the far right
 - Do NOT copy the total into game6.
@@ -738,7 +743,7 @@ def extract_rows_by_cropping(
 
             # Retry logic: if a band lands on "opponents"/"mark" rows, nudge downward.
             step = 0.06
-            for attempt in range(6):
+            for attempt in range(5):
                 box = (int(x1n * w), int(y1n * h), int(x2n * w), int(y2n * h))
                 crop = img_norm.crop(box)
                 logger.debug(
@@ -754,7 +759,7 @@ def extract_rows_by_cropping(
                     suffix = "" if attempt == 0 else f"-try{attempt+1}"
                     crop.save(debug_dir / f"{side}-row{idx}{suffix}.png", format="PNG")
 
-                crop_bytes = _img_crop_bytes(img_norm, box)
+                crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
                 data_url = _b64_data_url_bytes(crop_bytes, "image/png")
                 obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
                 if not isinstance(obj, dict):
@@ -862,7 +867,7 @@ def extract_rows_by_cropping(
             if debug_dir is not None:
                 crop.save(debug_dir / f"{side}-row{idx}.png", format="PNG")
 
-            crop_bytes = _img_crop_bytes(img_norm, box)
+            crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
             data_url = _b64_data_url_bytes(crop_bytes, "image/png")
             obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
             if not isinstance(obj, dict):
