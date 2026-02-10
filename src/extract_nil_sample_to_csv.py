@@ -35,7 +35,7 @@ import os
 import sys
 from typing import Any, Dict, List, Tuple
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 logger = logging.getLogger("nilpoolbot.extractor")
 if not logger.handlers:
@@ -44,7 +44,61 @@ if not logger.handlers:
     logger.addHandler(_h)
 logger.setLevel(getattr(logging, (os.getenv("BILLIARDSCORES_LOG_LEVEL") or "INFO").upper(), logging.INFO))
 
-# Optional: help type-checkers; not required at runtime.
+
+def _has_two_horizontal_border_lines(crop: Image.Image) -> bool:
+    """Heuristic: does the crop include two strong horizontal table border lines?
+
+    This is meant to prevent "half row" crops where we cut off the top or bottom
+    of the score band.
+
+    We look for two dark horizontal peaks: one in the top half, one in the bottom
+    half, separated by a reasonable distance.
+    """
+
+    w, h = crop.size
+    if w < 200 or h < 40:
+        return True  # Too small to judge; don't block.
+
+    # Work in grayscale and lightly blur to reduce noise.
+    g = crop.convert("L").filter(ImageFilter.GaussianBlur(radius=0.8))
+    px = list(g.getdata())
+
+    # Mean brightness per row (0=black, 255=white)
+    row_means: List[float] = []
+    for y in range(h):
+        start = y * w
+        row = px[start : start + w]
+        row_means.append(sum(row) / float(w))
+
+    # Smooth a bit (moving average)
+    smoothed: List[float] = []
+    for y in range(h):
+        y0 = max(0, y - 2)
+        y1 = min(h, y + 3)
+        smoothed.append(sum(row_means[y0:y1]) / float(y1 - y0))
+
+    # Establish a relative darkness threshold.
+    sorted_vals = sorted(smoothed)
+    p10 = sorted_vals[int(0.10 * (h - 1))]
+    median = sorted_vals[int(0.50 * (h - 1))]
+
+    # Border lines should be noticeably darker than the median row.
+    thresh = min(p10 + 10.0, median - 18.0)
+
+    candidates = [y for y, v in enumerate(smoothed) if v <= thresh]
+    if not candidates:
+        return False
+
+    top_region = [y for y in candidates if y <= int(h * 0.55)]
+    bot_region = [y for y in candidates if y >= int(h * 0.45)]
+    if not top_region or not bot_region:
+        return False
+
+    top_y = min(top_region, key=lambda y: smoothed[y])
+    bot_y = min(bot_region, key=lambda y: smoothed[y])
+
+    # Must be separated enough to plausibly be two borders.
+    return (bot_y - top_y) >= int(h * 0.35)
 
 
 HERE = Path(__file__).resolve().parent
@@ -826,6 +880,20 @@ def extract_rows_by_cropping(
                 if debug_dir is not None:
                     suffix = "" if attempt == 0 else f"-try{attempt+1}"
                     crop.save(debug_dir / f"{side}-row{idx}{suffix}.png", format="PNG")
+
+                # Pre-check: require that the crop contains the row's horizontal borders.
+                # If not, keep scanning downward without spending a vision-model call.
+                if not _has_two_horizontal_border_lines(crop):
+                    logger.info(
+                        "DEBUG row_reject_borders side=%s idx=%s attempt=%s px=%s",
+                        side,
+                        idx,
+                        attempt + 1,
+                        box,
+                    )
+                    y1n = clamp01(y1n + step)
+                    y2n = clamp01(y2n + step)
+                    continue
 
                 crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
                 data_url = _b64_data_url_bytes(crop_bytes, "image/png")
