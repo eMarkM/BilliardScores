@@ -833,8 +833,8 @@ def extract_rows_by_cropping(
     opp1 = detect_opponents_row1_by_model(img_norm, model=model, client=vc, debug_dir=debug_dir)
     if isinstance(opp1, dict) and isinstance(bands, dict):
         try:
-            gap = 0.008
-            score_h = 0.08
+            gap = 0.006
+            score_h = 0.09
 
             def clamp01(v: float) -> float:
                 return max(0.0, min(1.0, float(v)))
@@ -846,6 +846,9 @@ def extract_rows_by_cropping(
                 sy1 = clamp01(sy2 - score_h)
                 # Never start above header
                 sy1 = max(sy1, clamp01(bands.get("header_y2", 0.0)) + 0.005)
+                # Guard: ensure non-degenerate
+                if sy2 <= sy1 + 0.02:
+                    sy2 = clamp01(sy1 + 0.06)
                 bands[side]["rows"][0] = {"y1": sy1, "y2": sy2}
 
             apply("home")
