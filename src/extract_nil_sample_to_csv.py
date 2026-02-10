@@ -773,6 +773,12 @@ def extract_rows_by_cropping(
             max_attempts = 20
             player_num = offset + idx
 
+            # The first home row tends to be borderline with the printed header.
+            # Start a touch lower to avoid capturing too much of the header row.
+            if idx == 1:
+                y1n = clamp01(y1n + 0.012)
+                y2n = clamp01(y2n + 0.012)
+
             for attempt in range(max_attempts):
                 logger.info(
                     "DEBUG extract_attempt side=%s player_num=%s attempt=%s",
