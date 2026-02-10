@@ -66,6 +66,74 @@ SCOREBANDS_SCHEMA: dict[str, Any] = {
 }
 
 
+OPPONENTS_ROW1_SCHEMA: dict[str, Any] = {
+    "name": "nil_scoresheet_opponents_row1",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "home": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"y1": {"type": "number"}, "y2": {"type": "number"}},
+                "required": ["y1", "y2"],
+            },
+            "visiting": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"y1": {"type": "number"}, "y2": {"type": "number"}},
+                "required": ["y1", "y2"],
+            },
+        },
+        "required": ["home", "visiting"],
+    },
+}
+
+
+def detect_opponents_row1_by_model(
+    img_boxscore: Image.Image,
+    *,
+    model: str,
+    client: VisionClient | None = None,
+    debug_dir: Path | None = None,
+) -> dict[str, Any] | None:
+    """Locate the OPPONENTS sub-row for player 1 on each side.
+
+    The word 'opponents' is printed in that row, so it is often easier to locate
+    reliably than the handwritten score row. We use it as an anchor and crop the
+    score row immediately above it.
+
+    Returns: {home:{y1,y2}, visiting:{y1,y2}, _source='model'} with normalized y.
+    """
+
+    vc = client or OpenAIVisionClient()
+
+    img_bytes, mime = _img_bytes(img_boxscore, max_w=1600, fmt="JPEG")
+    data_url = _b64_data_url_bytes(img_bytes, mime)
+
+    prompt = (
+        "This image shows the NIL scoresheet BOXSCORE area with HOME TEAM table on the left and VISITING TEAM table on the right. "
+        "For the FIRST player block (player 1 on home and player 4 on visiting), locate the printed sub-row that contains the word 'opponents' and matchup strings like '1v4'. "
+        "Return tight y1/y2 (normalized 0..1) for that opponents row on the home side and on the visiting side. "
+        "Do not return the score row; return only the opponents sub-row."
+    )
+
+    try:
+        obj = vision_json(vc, prompt, data_url, model=model, schema=OPPONENTS_ROW1_SCHEMA)
+        if not isinstance(obj, dict):
+            return None
+        obj = dict(obj)
+        obj["_source"] = "model"
+        if debug_dir is not None:
+            try:
+                (debug_dir / "opponents_row1_model.json").write_text(json.dumps(obj, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        return obj
+    except Exception:
+        return None
+
+
 def detect_scorebands_by_model(
     img_boxscore: Image.Image,
     *,

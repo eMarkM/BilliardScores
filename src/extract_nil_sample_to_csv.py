@@ -810,7 +810,7 @@ def extract_rows_by_cropping(
     # Anchor-based step: detect exact SCORE row bands inside the boxscore.
     # Use the model first for layout (it can distinguish SCORE vs MARK vs OPPONENTS),
     # then fall back to grid-line detection.
-    from layout_detect import detect_scorebands_by_model
+    from layout_detect import detect_opponents_row1_by_model, detect_scorebands_by_model
 
     def _layout_is_suspicious(b: dict) -> bool:
         try:
@@ -828,6 +828,31 @@ def extract_rows_by_cropping(
     if bands is not None and _layout_is_suspicious(bands):
         logger.debug("rowbands_model_suspicious; ignoring model layout")
         bands = None
+
+    # Extra anchor for row 1: locate the printed OPPONENTS row and crop above it.
+    opp1 = detect_opponents_row1_by_model(img_norm, model=model, client=vc, debug_dir=debug_dir)
+    if isinstance(opp1, dict) and isinstance(bands, dict):
+        try:
+            gap = 0.008
+            score_h = 0.08
+
+            def clamp01(v: float) -> float:
+                return max(0.0, min(1.0, float(v)))
+
+            def apply(side: str) -> None:
+                oy1 = clamp01(opp1[side]["y1"])
+                # score row ends just above opponents
+                sy2 = clamp01(oy1 - gap)
+                sy1 = clamp01(sy2 - score_h)
+                # Never start above header
+                sy1 = max(sy1, clamp01(bands.get("header_y2", 0.0)) + 0.005)
+                bands[side]["rows"][0] = {"y1": sy1, "y2": sy2}
+
+            apply("home")
+            apply("visiting")
+            bands["_row1_anchor"] = "opponents"
+        except Exception:
+            pass
 
     if bands is None:
         bands = detect_row_bands_by_grid(img_norm)
