@@ -96,7 +96,7 @@ if not logger.handlers:
 
 
 # If a user already has a confirmed upload for the week, require /replace before accepting a new photo.
-REPLACE_ARMED: Dict[Tuple[int, int, str], bool] = {}
+# /replace now *unconfirms* the latest confirmed upload (sets it back to PENDING).
 
 
 HELP_TEXT = (
@@ -108,7 +108,7 @@ HELP_TEXT = (
     "Commands:\n"
     "- /confirm — confirm your latest pending upload for this week\n"
     "- /csv — get your confirmed CSV for this week\n"
-    "- /replace — allow replacing your confirmed upload (then send new photo)\n"
+    "- /replace — set your confirmed upload back to PENDING (then /confirm again or upload a new photo)\n"
     "- /status — show team upload status since Monday\n"
     "- /fixscore <player_num> <game_num> <value> — fix a score in your pending CSV\n"
     "  Example: /fixscore 4 2 4     (player 4, game 2 → 4)\n"
@@ -342,6 +342,27 @@ def _latest_confirmed_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, u
     ).fetchone()
 
 
+def _unconfirm_latest_confirmed_upload(
+    con: sqlite3.Connection,
+    ws_s: str,
+    chat_id: int,
+    user_id: int,
+) -> int | None:
+    """Set the most recent CONFIRMED upload back to PENDING (confirmed_at=NULL).
+
+    Returns the upload_id that was unconfirmed, or None if no confirmed upload exists.
+    """
+
+    row = _latest_confirmed_upload(con, ws_s, chat_id, user_id)
+    if not row:
+        return None
+
+    upload_id, _created_at, _image_path, _csv_path = row
+    con.execute("UPDATE uploads SET confirmed_at = NULL WHERE id = ?", (upload_id,))
+    con.commit()
+    return int(upload_id)
+
+
 async def replace_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     if not msg:
@@ -354,11 +375,33 @@ async def replace_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     ws_s = _week_start(datetime.now()).date().isoformat()
-    # Arm replace for this week in this chat/user
-    REPLACE_ARMED[(c.id, u.id, ws_s)] = True
-    logger.info("replace_armed week_start=%s chat_id=%s user=%s", ws_s, c.id, _user_label(update))
+
+    con = _db()
+    try:
+        upload_id = _unconfirm_latest_confirmed_upload(con, ws_s, c.id, u.id)
+    finally:
+        con.close()
+
+    if not upload_id:
+        await msg.reply_text(
+            "No confirmed upload found for this week yet.\n\n"
+            "Send a scoresheet photo to start, then /confirm when it looks good."
+        )
+        return
+
+    logger.info(
+        "replace_set_pending upload_id=%s week_start=%s chat_id=%s user=%s",
+        upload_id,
+        ws_s,
+        c.id,
+        _user_label(update),
+    )
+
     await msg.reply_text(
-        "OK — send the updated scoresheet photo now and I’ll treat it as a replacement for this week’s confirmed upload."
+        f"OK — I set your confirmed upload (#{upload_id}) back to PENDING.\n\n"
+        "Next:\n"
+        "- If it’s actually correct, run /confirm again\n"
+        "- Or send a new photo to replace it"
     )
 
 
@@ -731,28 +774,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if confirmed:
         cid, created_at, img_path, csv_path = confirmed
-        armed = REPLACE_ARMED.pop((update.effective_chat.id, update.effective_user.id, ws_s), False)
-        if not armed:
-            logger.info(
-                "upload_blocked_needs_replace upload_id=%s week_start=%s chat_id=%s user=%s",
-                cid,
-                ws_s,
-                update.effective_chat.id,
-                _user_label(update),
-            )
-            await msg.reply_text(
-                f"You already have a CONFIRMED upload for this week (upload #{cid}).\n\n"
-                "If you want to replace it, run /replace and then send the new photo again."
-            )
-            return
-        else:
-            logger.info(
-                "upload_replace_allowed confirmed_upload_id=%s week_start=%s chat_id=%s user=%s",
-                cid,
-                ws_s,
-                update.effective_chat.id,
-                _user_label(update),
-            )
+        logger.info(
+            "upload_blocked_needs_replace upload_id=%s week_start=%s chat_id=%s user=%s",
+            cid,
+            ws_s,
+            update.effective_chat.id,
+            _user_label(update),
+        )
+        await msg.reply_text(
+            f"You already have a CONFIRMED upload for this week (upload #{cid}).\n\n"
+            "If you want to replace it, run /replace first."
+        )
+        return
 
     await msg.reply_text("Processing your sheet, please hold for results.")
 
