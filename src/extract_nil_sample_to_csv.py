@@ -927,9 +927,11 @@ def extract_rows_by_cropping(
                     suffix = "" if attempt == 0 else f"-try{attempt+1}"
                     crop.save(debug_dir / f"{side}-row{idx}{suffix}.png", format="PNG")
 
-                # Pre-check: require that the crop contains the row's horizontal borders.
-                # If not, keep scanning downward without spending a vision-model call.
-                if not _has_two_horizontal_border_lines(crop):
+                # Pre-check: try to require that the crop contains the row's horizontal borders.
+                # In practice, photos with glare/shadows can cause this heuristic to miss.
+                # So we only use it to skip *early* bad candidates; later attempts are
+                # allowed to proceed to the model.
+                if not _has_two_horizontal_border_lines(crop) and attempt < 6:
                     logger.info(
                         "DEBUG row_reject_borders side=%s idx=%s attempt=%s px=%s",
                         side,
