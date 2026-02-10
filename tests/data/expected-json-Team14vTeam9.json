@@ -1,0 +1,74 @@
+[
+  {
+    "player_num": 1,
+    "side": "home",
+    "player": "John Doe",
+    "game1": 2,
+    "game2": 3,
+    "game3": 4,
+    "game4": 2,
+    "game5": 3,
+    "game6": 4,
+    "total": 18
+  },
+  {
+    "player_num": 2,
+    "side": "home",
+    "player": "Erwin",
+    "game1": 10,
+    "game2": 1,
+    "game3": 3,
+    "game4": 10,
+    "game5": 2,
+    "game6": 10,
+    "total": 36
+  },
+  {
+    "player_num": 3,
+    "side": "home",
+    "player": "Randy",
+    "game1": 5,
+    "game2": 10,
+    "game3": 6,
+    "game4": 10,
+    "game5": 10,
+    "game6": 10,
+    "total": 51
+  },
+  {
+    "player_num": 4,
+    "side": "visiting",
+    "player": "Jill",
+    "game1": 2,
+    "game2": 3,
+    "game3": 2,
+    "game4": 2,
+    "game5": 2,
+    "game6": 2,
+    "total": 13
+  },
+  {
+    "player_num": 5,
+    "side": "visiting",
+    "player": "Jake",
+    "game1": 7,
+    "game2": 10,
+    "game3": 10,
+    "game4": 2,
+    "game5": 0,
+    "game6": 3,
+    "total": 32
+  },
+  {
+    "player_num": 6,
+    "side": "visiting",
+    "player": "hil",
+    "game1": 10,
+    "game2": 6,
+    "game3": 10,
+    "game4": 3,
+    "game5": 10,
+    "game6": 6,
+    "total": 45
+  }
+]
