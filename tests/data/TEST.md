@@ -50,3 +50,8 @@ Remy Notes
   - Removed border-line precheck entirely (was causing missed rows under glare/shadows).
 - Current result: still failing on Team11vTeam2 because crops are still contaminated by opponents/total-team area (e.g. player becomes "3v6" or "158"). Indicates our banding/cropping still includes printed opponents row or the handwritten "158" below the tables.
 
+## Iteration 5 (fix header anchor detection)
+- Problem: we were overshooting from the start because `detect_row_bands_by_grid()` guessed the header line at ~16% of image height; on this sheet it picked a much lower gridline, so every subsequent row crop was shifted down into opponents.
+- Change: pick the header separator line by gridline spacing pattern (short header band followed by taller score band), with a fallback heuristic.
+- Result: extraction now finds 6 rows consistently, but the *content* is still wrong (player names like "chris" and scores badly off expected), indicating the crop geometry is still incorrect and/or the model is reading wrong cells.
+

@@ -644,9 +644,29 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
             cur = [y]
     lines.append(int(sum(cur) / len(cur)))
 
-    # Pick a header separator line near where the printed header ends.
-    target = int(h * 0.16)
-    header = min(lines, key=lambda y: abs(y - target))
+    # Pick the header separator line: the horizontal line directly under the
+    # printed column headers ("Rating | Player | 1 2 3 4 5 6 | Total").
+    #
+    # Instead of assuming a fixed vertical position, detect it by the pattern of
+    # gridline spacing: a relatively short header band followed by a taller score
+    # band.
+    header: int | None = None
+    for i in range(len(lines) - 2):
+        y0, y1, y2 = lines[i], lines[i + 1], lines[i + 2]
+        dh = y1 - y0
+        ds = y2 - y1
+        if dh <= 0 or ds <= 0:
+            continue
+
+        # Header row is usually modest height; score row below is taller.
+        if 18 <= dh <= int(h * 0.10) and ds >= int(dh * 1.25) and ds >= int(h * 0.06):
+            header = y1
+            break
+
+    # Fallback: best effort (older heuristic)
+    if header is None:
+        target = int(h * 0.14)
+        header = min(lines, key=lambda y: abs(y - target))
 
     after = [y for y in lines if y > header + 5]
     if len(after) < 6:
@@ -661,37 +681,48 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
             bands.append((prev_y, y, height))
         prev_y = y
 
-    # The NIL table layout repeats in blocks of 3 bands per player:
-    #   SCORE row, MARK row, OPPONENTS row.
-    # After the header line we expect 9 bands total (3 players * 3 bands).
-    if len(bands) < 9:
-        return None
-
-    # Take the first band of each 3-band block as the SCORE row.
-    score_triplets = [bands[0], bands[3], bands[6]]
-
+    # Try to pick "score" bands by looking for a repeating 3-band pattern:
+    #   SCORE (tall), MARK (shorter), OPPONENTS (shorter).
+    # This is more robust than assuming exact triplet alignment.
     min_score_h = int(h * 0.05)
-    if any(hh < min_score_h for (_, _, hh) in score_triplets):
-        return None
 
-    score_bands: list[tuple[int, int]] = [(a, b) for (a, b, _) in score_triplets]
+    score_bands: list[tuple[int, int]] = []
+    i = 0
+    while i + 2 < len(bands) and len(score_bands) < 3:
+        a0, b0, h0 = bands[i]
+        _, _, h1 = bands[i + 1]
+        _, _, h2 = bands[i + 2]
+
+        is_score = (
+            h0 >= min_score_h
+            and h1 <= int(h0 * 0.85)
+            and h2 <= int(h0 * 0.85)
+        )
+
+        if is_score:
+            score_bands.append((a0, b0))
+            i += 3
+        else:
+            i += 1
+
+    if len(score_bands) < 3:
+        return None
 
     def n(v: int, denom: int) -> float:
         return max(0.0, min(1.0, v / denom))
 
-    # The span between gridlines often covers SCORE + MARK + OPPONENTS sub-rows.
-    # We only want the SCORE sub-row (top portion) to avoid capturing the printed
-    # word "opponents" and matchup strings.
-    pad_top = 4
-    score_frac = 0.44  # keep top ~44% of the detected band (avoid opponents row)
+    # The span between horizontal gridlines may include SCORE plus part of the
+    # MARK/OPPONENTS sub-rows (depending on how the sheet is printed).
+    # Keep the crop anchored to the top portion where scores are written.
+    pad_top = 3
+    score_frac = 0.50  # keep top ~50% of the band (exclude mark/opponents rows)
     rows_norm = []
     for (a, b) in score_bands:
         hh = max(1, b - a)
-        y1 = a + pad_top
+        y1 = a + max(pad_top, int(hh * 0.08))
         y2 = a + int(hh * score_frac)
-        # Ensure at least some height.
-        if y2 <= y1 + 10:
-            y2 = min(b, y1 + 20)
+        if y2 <= y1 + 16:
+            y2 = min(b, y1 + 28)
         rows_norm.append({"y1": n(y1, h), "y2": n(y2, h)})
 
     return {
