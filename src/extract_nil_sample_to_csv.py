@@ -868,7 +868,10 @@ def extract_rows_by_cropping(
                 # it confidently reads a DIFFERENT positive index.
                 wrong_index = (row_index not in {-1, player_num})
 
-                keyword_flags = has_opponents_word or has_mark_word
+                # "opponents" in a crop is almost always the wrong band.
+                # "mark" may appear if we slightly over-crop downward; don't hard-reject
+                # a plausible player row just because it contains some of that printed line.
+                keyword_flags = has_opponents_word or (has_mark_word and hit_keywords)
                 looks_wrong = invalid_scores or hit_keywords or wrong_index or keyword_flags
 
                 if looks_wrong:
