@@ -807,12 +807,33 @@ def extract_rows_by_cropping(
 
     w, h = img_norm.size
 
-    # Anchor-based step: detect exact score-row bands inside the boxscore.
-    # Prefer grid-line detection (deterministic) over model guessing.
-    bands = detect_row_bands_by_grid(img_norm)
+    # Anchor-based step: detect exact SCORE row bands inside the boxscore.
+    # Use the model first for layout (it can distinguish SCORE vs MARK vs OPPONENTS),
+    # then fall back to grid-line detection.
+    from layout_detect import detect_scorebands_by_model
+
+    def _layout_is_suspicious(b: dict) -> bool:
+        try:
+            rows0 = (b.get("home", {}) or {}).get("rows", [])
+            if not rows0:
+                return True
+            y1 = float(rows0[0]["y1"])
+            y2 = float(rows0[0]["y2"])
+            # If the first "score row" starts too far down, we likely anchored on opponents.
+            return y1 > 0.30 or (y2 - y1) < 0.05
+        except Exception:
+            return True
+
+    bands = detect_scorebands_by_model(img_norm, model=model, client=vc, debug_dir=debug_dir)
+    if bands is not None and _layout_is_suspicious(bands):
+        logger.debug("rowbands_model_suspicious; ignoring model layout")
+        bands = None
+
     if bands is None:
-        logger.debug("rowbands_grid_failed; falling back to model rowbands")
-        bands = detect_row_bands(img_norm, model=model, client=vc)
+        bands = detect_row_bands_by_grid(img_norm)
+        if bands is None:
+            logger.debug("rowbands_grid_failed; falling back to model rowbands")
+            bands = detect_row_bands(img_norm, model=model, client=vc)
 
     if bands is None:
         # Final fallback: use the tuned fixed boxes. This is less robust across
@@ -834,7 +855,8 @@ def extract_rows_by_cropping(
         )
     else:
         logger.debug(
-            "rowbands_ok header_y2=%.3f rows=%s",
+            "rowbands_ok source=%s header_y2=%.3f rows=%s",
+            bands.get("_source", "grid"),
             float(bands.get("header_y2", 0.0)),
             [(r.get("y1"), r.get("y2")) for r in bands.get("home", {}).get("rows", [])],
         )
@@ -851,6 +873,8 @@ def extract_rows_by_cropping(
         return max(0.0, min(1.0, float(v)))
 
     header_y2 = clamp01(bands.get("header_y2", 0.0)) if isinstance(bands, dict) else 0.0
+
+    model_layout = isinstance(bands, dict) and bands.get("_source") == "model"
 
     def do_side_detected(side: str, band_side: dict, offset: int) -> bool:
         x1n = clamp01(band_side["x1"])
@@ -891,15 +915,15 @@ def extract_rows_by_cropping(
             # Scan around the initially-detected band. Keep the search range
             # tight; a wide scan can accidentally land on adjacent rows and cause
             # row-slot swaps.
-            # With grid-based row-banding, the initial y1/y2 should already be
-            # close. Keep scan range tight to avoid drifting into adjacent rows.
-            step = 0.004
-            max_attempts = 3
+            # If we have model-provided layout boxes, they should be close, but can
+            # still be slightly tight. Allow a small scan window to improve recall.
+            step = 0.006 if model_layout else 0.004
+            max_attempts = 5 if model_layout else 3
             player_num = offset + idx
 
             base_y1n = y1n
             base_y2n = y2n
-            up_attempts = 1
+            up_attempts = 4 if model_layout else 1
 
             for attempt in range(max_attempts):
                 # attempt: 0..max_attempts-1; first `up_attempts` go upward.
@@ -919,11 +943,23 @@ def extract_rows_by_cropping(
                 # Important: don't pad too much vertically; it can bleed into adjacent
                 # rows and cause row-slot swaps (e.g., row_index=1 but row2's handwriting).
                 base_h = max(0.02, y2n - y1n)
-                pad = max(0.006, base_h * 0.15)
+                # Model-detected bands can be very tight; pad more in that case.
+                if model_layout:
+                    # Model layout is usually close. Pad more on TOP to ensure we keep
+                    # the player name + score digits, but pad minimally on the bottom
+                    # to avoid bleeding into MARK/OPPONENTS rows.
+                    pad = max(0.015, base_h * 0.45)
+                else:
+                    pad = max(0.006, base_h * 0.15)
+
                 crop_x1n = clamp01(x1n - 0.01)
                 crop_x2n = clamp01(x2n + 0.00)
-                crop_y1n = clamp01(y1n - pad * 0.10)
-                crop_y2n = clamp01(y2n + pad * 0.10)
+                if model_layout:
+                    crop_y1n = clamp01(y1n - pad * 0.50)
+                    crop_y2n = clamp01(y2n + pad * 0.12)
+                else:
+                    crop_y1n = clamp01(y1n - pad * 0.35)
+                    crop_y2n = clamp01(y2n + pad * 0.35)
 
                 box = (int(crop_x1n * w), int(crop_y1n * h), int(crop_x2n * w), int(crop_y2n * h))
 
