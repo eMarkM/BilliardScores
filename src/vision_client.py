@@ -26,29 +26,41 @@ class OpenAIVisionClient:
             ) from e
 
         client = OpenAI()
-        resp = client.chat.completions.create(
-            model=model,
-            response_format={"type": "json_schema", "json_schema": schema},
-            messages=[
-                {
-                    # System messages can only contain text; put the image in a user message.
-                    "role": "system",
-                    "content": prompt,
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Extract the scores from this image."},
-                        {"type": "image_url", "image_url": {"url": data_url}},
+        last_err: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    response_format={"type": "json_schema", "json_schema": schema},
+                    messages=[
+                        {
+                            # System messages can only contain text; put the image in a user message.
+                            "role": "system",
+                            "content": prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Extract the scores from this image."},
+                                {"type": "image_url", "image_url": {"url": data_url}},
+                            ],
+                        },
                     ],
-                },
-            ],
-            temperature=0,
-        )
+                    temperature=0,
+                )
 
-        text = (resp.choices[0].message.content or "").strip()
-        if not text:
-            raise RuntimeError("Model returned empty response")
+                text = (resp.choices[0].message.content or "").strip()
+                if not text:
+                    raise RuntimeError("Model returned empty response")
+
+                break
+            except Exception as e:  # pragma: no cover
+                last_err = e
+                if attempt >= 3:
+                    raise
+
+        if last_err is not None and not text:
+            raise last_err
 
         lowered = text.lower()
         if "can't assist" in lowered or "cannot assist" in lowered or "i'm sorry" in lowered:

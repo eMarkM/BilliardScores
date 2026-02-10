@@ -786,9 +786,28 @@ def extract_rows_by_cropping(
     if bands is None:
         logger.debug("rowbands_grid_failed; falling back to model rowbands")
         bands = detect_row_bands(img_norm, model=model, client=vc)
+
+    if bands is None:
+        # Final fallback: use the tuned fixed boxes. This is less robust across
+        # framing, but it's better than returning no rows at all.
+        def _nxy(v: int, denom: int) -> float:
+            return max(0.0, min(1.0, v / float(denom)))
+
+        home_rows = [{"y1": _nxy(y1, BASE_H), "y2": _nxy(y2, BASE_H)} for (_, y1, _, y2) in HOME_ROW_BOXES_BASE]
+        vis_rows = [{"y1": _nxy(y1, BASE_H), "y2": _nxy(y2, BASE_H)} for (_, y1, _, y2) in VISITING_ROW_BOXES_BASE]
+        bands = {
+            "header_y2": _nxy(200, BASE_H),
+            "home": {"x1": 0.0, "x2": 0.5, "rows": home_rows},
+            "visiting": {"x1": 0.5, "x2": 1.0, "rows": vis_rows},
+        }
+        logger.debug(
+            "rowbands_fallback_fixed header_y2=%.3f rows=%s",
+            float(bands.get("header_y2", 0.0)),
+            [(r.get("y1"), r.get("y2")) for r in bands.get("home", {}).get("rows", [])],
+        )
     else:
         logger.debug(
-            "rowbands_grid_ok header_y2=%.3f rows=%s",
+            "rowbands_ok header_y2=%.3f rows=%s",
             float(bands.get("header_y2", 0.0)),
             [(r.get("y1"), r.get("y2")) for r in bands.get("home", {}).get("rows", [])],
         )
@@ -842,16 +861,16 @@ def extract_rows_by_cropping(
             # Retry logic: scan downward in fixed steps until we land on the actual
             # player score band (anchored by the small printed row number in the
             # lower-left of the player-name box).
-            step = 0.03
-            max_attempts = 20
+            # Scan around the initially-detected band. Keep the search range
+            # tight; a wide scan can accidentally land on adjacent rows and cause
+            # row-slot swaps.
+            step = 0.015
+            max_attempts = 14
             player_num = offset + idx
 
-            # Search around the initially-detected band. Some full-page photos
-            # shift the detected row bands slightly; if we start too low, scanning
-            # downward will never recover. So we try a few upward offsets first.
             base_y1n = y1n
             base_y2n = y2n
-            up_attempts = 6
+            up_attempts = 3
 
             for attempt in range(max_attempts):
                 # attempt: 0..max_attempts-1; first `up_attempts` go upward.
@@ -866,13 +885,16 @@ def extract_rows_by_cropping(
                 )
 
                 # Add a little padding so we reliably include the full row band,
-                # including the tiny printed row index number and the top/bottom borders.
+                # including the tiny printed row index number.
+                #
+                # Important: don't pad too much vertically; it can bleed into adjacent
+                # rows and cause row-slot swaps (e.g., row_index=1 but row2's handwriting).
                 base_h = max(0.02, y2n - y1n)
-                pad = max(0.01, base_h * 0.25)
+                pad = max(0.01, base_h * 0.20)
                 crop_x1n = clamp01(x1n - 0.01)
                 crop_x2n = clamp01(x2n + 0.00)
-                crop_y1n = clamp01(y1n - pad * 0.35)
-                crop_y2n = clamp01(y2n + pad * 0.75)
+                crop_y1n = clamp01(y1n - pad * 0.20)
+                crop_y2n = clamp01(y2n + pad * 0.30)
 
                 box = (int(crop_x1n * w), int(crop_y1n * h), int(crop_x2n * w), int(crop_y2n * h))
 
@@ -1067,6 +1089,8 @@ def extract_rows_by_cropping(
         do_side_detected("home", bands["home"], offset=0)
         do_side_detected("visiting", bands["visiting"], offset=3)
         return rows
+
+    raise RuntimeError("Row band detection failed (no usable 'home'/'visiting' bands)")
 
 
 def normalize_rows(image_name: str, extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
