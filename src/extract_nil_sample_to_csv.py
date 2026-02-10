@@ -84,6 +84,8 @@ IMPORTANT: This crop may include parts of adjacent rows (like the "mark" line) a
 
 Output STRICT JSON with keys:
 - row_index: integer (the small printed row number 1-6 in the lower-left of the player-name box)
+  - MUST be that tiny printed index, not inferred from context.
+  - If you cannot read it confidently, set row_index to -1.
 - has_opponents_word: boolean (optional; true if the printed word "opponents" appears anywhere in this crop)
 - has_mark_word: boolean (optional; true if the printed word "mark" appears anywhere in this crop)
 - player: string (copy the handwritten name as written)
@@ -843,13 +845,18 @@ def extract_rows_by_cropping(
                     int(obj.get("game5", -1)),
                     int(obj.get("game6", -1)),
                 ]
+                total = int(obj.get("total", -1))
+                sum_games = sum(g for g in games if g >= 0)
+
                 invalid_scores = any(v in {8, 9} or v < 0 or (v > 7 and v != 10) for v in games)
+                total_mismatch = (not invalid_scores) and (total >= 0) and (sum_games != total)
 
                 # Heuristic: if we hit printed sub-rows, the model tends to output these tokens.
                 # Also reject opponent-matchup strings like "1v4" / "4v1".
                 import re
 
                 has_alpha = any(ch.isalpha() for ch in player)
+                looks_like_name = has_alpha and len(player.strip()) >= 3
 
                 # e.g. "1v4", "4 v 1" (letters other than 'v' are not allowed)
                 opponent_like = re.fullmatch(r"\d+\s*v\s*\d+", player) is not None
@@ -863,22 +870,28 @@ def extract_rows_by_cropping(
                     or (not has_alpha)
                 )
 
-                # Row index is great when the model can read it, but sometimes it
-                # returns -1 even when the crop is correct. Only hard-reject when
-                # it confidently reads a DIFFERENT positive index.
-                wrong_index = (row_index not in {-1, player_num})
+                # Hard requirement: we must be able to read the tiny printed row index
+                # (1-6) and it must match the player we're extracting. This prevents
+                # accepting cut-off/shifted crops with plausible-but-wrong scores.
+                wrong_index = (row_index != player_num)
 
                 # "opponents" is a strong indicator we're on the wrong sub-row.
-                # "mark" is too flaky (false positives even on clean crops), so we only
-                # treat it as a rejection signal when the player field itself looks like
-                # we accidentally latched onto the mark/opponents area.
-                keyword_flags = has_opponents_word or (has_mark_word and hit_keywords)
-                looks_wrong = invalid_scores or hit_keywords or wrong_index or keyword_flags
+                # "mark" is too flaky (false positives even on clean crops). With the
+                # strict row_index requirement above, we don't need to reject on it.
+                keyword_flags = has_opponents_word
+
+                looks_wrong = (
+                    invalid_scores
+                    or total_mismatch
+                    or hit_keywords
+                    or wrong_index
+                    or keyword_flags
+                )
 
                 if looks_wrong:
                     msg = (
                         "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s "
-                        "has_opp=%s has_mark=%s invalid_scores=%s hit_keywords=%s games=%s"
+                        "has_opp=%s has_mark=%s invalid_scores=%s total_mismatch=%s hit_keywords=%s games=%s total=%s"
                     )
                     logger.debug(
                         msg,
@@ -891,8 +904,10 @@ def extract_rows_by_cropping(
                         has_opponents_word,
                         has_mark_word,
                         invalid_scores,
+                        total_mismatch,
                         hit_keywords,
                         games,
+                        total,
                     )
                     # Also surface at INFO so it shows up in bot.log.
                     logger.info(
@@ -906,8 +921,10 @@ def extract_rows_by_cropping(
                         has_opponents_word,
                         has_mark_word,
                         invalid_scores,
+                        total_mismatch,
                         hit_keywords,
                         games,
+                        total,
                     )
                 else:
                     logger.debug(
