@@ -137,9 +137,6 @@ IMPORTANT: This crop may include parts of adjacent rows (like the "mark" line) a
 - Do NOT copy the total into game6.
 
 Output STRICT JSON with keys:
-- row_index: integer (the small printed row number 1-6 in the lower-left of the player-name box)
-  - MUST be that tiny printed index, not inferred from context.
-  - If you cannot read it confidently, set row_index to -1.
 - has_opponents_word: boolean (optional; true if the printed word "opponents" appears anywhere in this crop)
 - has_mark_word: boolean (optional; true if the printed word "mark" appears anywhere in this crop)
 - player: string (copy the handwritten name as written)
@@ -149,7 +146,6 @@ Output STRICT JSON with keys:
 Rules:
 - Output MUST be a single JSON object.
 - Only include those keys.
-- If you cannot clearly see the printed row_index, set row_index to -1.
 - If you can see "opponents" or "mark" in the crop, set the corresponding boolean true.
 - Valid game scores are ONLY 0,1,2,3,4,5,6,7,10. 8 and 9 are impossible.
 - total should equal sum(game1..game6). If it doesn't, re-check the digits.
@@ -302,7 +298,6 @@ ROW_SCHEMA = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "row_index": {"type": "integer"},
             "has_opponents_word": {"type": "boolean"},
             "has_mark_word": {"type": "boolean"},
             "player": {"type": "string"},
@@ -315,7 +310,6 @@ ROW_SCHEMA = {
             "total": {"type": "integer"},
         },
         "required": [
-            "row_index",
             "player",
             "game1",
             "game2",
@@ -667,36 +661,38 @@ def detect_row_bands_by_grid(img_boxscore: Image.Image) -> dict | None:
             bands.append((prev_y, y, height))
         prev_y = y
 
-    # Prefer a repeating pattern: score (tall), mark (short), opponents (short)
-    # starting right after the header.
-    #
-    # The raw band heights often look like:
-    #   score (tall), mark (medium), opponents (medium), spacer (small), score (tall), ...
-    # So selecting the first 3 bands above a height threshold can accidentally grab
-    # the "mark" or "opponents" rows. Instead, we pick tall bands that are spaced
-    # out by at least 2 intervening bands.
-    min_score_h = int(h * 0.07)
-    score_bands: list[tuple[int, int]] = []
-    last_score_idx: int | None = None
-    for idx, (a, b, hh) in enumerate(bands):
-        if hh < min_score_h:
-            continue
-        if last_score_idx is not None and (idx - last_score_idx) < 3:
-            continue
-        score_bands.append((a, b))
-        last_score_idx = idx
-        if len(score_bands) == 3:
-            break
-
-    if len(score_bands) < 3:
+    # The NIL table layout repeats in blocks of 3 bands per player:
+    #   SCORE row, MARK row, OPPONENTS row.
+    # After the header line we expect 9 bands total (3 players * 3 bands).
+    if len(bands) < 9:
         return None
+
+    # Take the first band of each 3-band block as the SCORE row.
+    score_triplets = [bands[0], bands[3], bands[6]]
+
+    min_score_h = int(h * 0.05)
+    if any(hh < min_score_h for (_, _, hh) in score_triplets):
+        return None
+
+    score_bands: list[tuple[int, int]] = [(a, b) for (a, b, _) in score_triplets]
 
     def n(v: int, denom: int) -> float:
         return max(0.0, min(1.0, v / denom))
 
-    # Padding is important: the row band should not bleed into the "mark" row below.
-    pad = 12
-    rows_norm = [{"y1": n(a + pad, h), "y2": n(b - pad, h)} for (a, b) in score_bands]
+    # The span between gridlines often covers SCORE + MARK + OPPONENTS sub-rows.
+    # We only want the SCORE sub-row (top portion) to avoid capturing the printed
+    # word "opponents" and matchup strings.
+    pad_top = 4
+    score_frac = 0.44  # keep top ~44% of the detected band (avoid opponents row)
+    rows_norm = []
+    for (a, b) in score_bands:
+        hh = max(1, b - a)
+        y1 = a + pad_top
+        y2 = a + int(hh * score_frac)
+        # Ensure at least some height.
+        if y2 <= y1 + 10:
+            y2 = min(b, y1 + 20)
+        rows_norm.append({"y1": n(y1, h), "y2": n(y2, h)})
 
     return {
         "header_y2": n(header, h),
@@ -864,13 +860,15 @@ def extract_rows_by_cropping(
             # Scan around the initially-detected band. Keep the search range
             # tight; a wide scan can accidentally land on adjacent rows and cause
             # row-slot swaps.
-            step = 0.015
-            max_attempts = 14
+            # With grid-based row-banding, the initial y1/y2 should already be
+            # close. Keep scan range tight to avoid drifting into adjacent rows.
+            step = 0.004
+            max_attempts = 3
             player_num = offset + idx
 
             base_y1n = y1n
             base_y2n = y2n
-            up_attempts = 3
+            up_attempts = 1
 
             for attempt in range(max_attempts):
                 # attempt: 0..max_attempts-1; first `up_attempts` go upward.
@@ -890,11 +888,11 @@ def extract_rows_by_cropping(
                 # Important: don't pad too much vertically; it can bleed into adjacent
                 # rows and cause row-slot swaps (e.g., row_index=1 but row2's handwriting).
                 base_h = max(0.02, y2n - y1n)
-                pad = max(0.01, base_h * 0.20)
+                pad = max(0.006, base_h * 0.15)
                 crop_x1n = clamp01(x1n - 0.01)
                 crop_x2n = clamp01(x2n + 0.00)
-                crop_y1n = clamp01(y1n - pad * 0.20)
-                crop_y2n = clamp01(y2n + pad * 0.30)
+                crop_y1n = clamp01(y1n - pad * 0.10)
+                crop_y2n = clamp01(y2n + pad * 0.10)
 
                 box = (int(crop_x1n * w), int(crop_y1n * h), int(crop_x2n * w), int(crop_y2n * h))
 
@@ -927,33 +925,18 @@ def extract_rows_by_cropping(
                     suffix = "" if attempt == 0 else f"-try{attempt+1}"
                     crop.save(debug_dir / f"{side}-row{idx}{suffix}.png", format="PNG")
 
-                # Pre-check: try to require that the crop contains the row's horizontal borders.
-                # In practice, photos with glare/shadows can cause this heuristic to miss.
-                # So we only use it to skip *early* bad candidates; later attempts are
-                # allowed to proceed to the model.
-                if not _has_two_horizontal_border_lines(crop) and attempt < 6:
-                    logger.info(
-                        "DEBUG row_reject_borders side=%s idx=%s attempt=%s px=%s",
-                        side,
-                        idx,
-                        attempt + 1,
-                        box,
-                    )
-                    continue
+                # Pre-check NOTE: previously we tried to detect the two horizontal
+                # border lines to avoid half-row crops. In practice this caused missed
+                # rows on real photos (glare/shadows). We rely on score sanity checks
+                # and tight row-banding instead.
 
                 crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
                 data_url = _b64_data_url_bytes(crop_bytes, "image/png")
-                per_row_prompt = (
-                    ROW_PROMPT
-                    + f"\n\nYou are currently looking for row_index={player_num}. "
-                    "Only accept this crop if the printed row_index matches exactly."
-                )
-                obj = vision_json(vc, per_row_prompt, data_url, model=model, schema=ROW_SCHEMA)
+                obj = vision_json(vc, ROW_PROMPT, data_url, model=model, schema=ROW_SCHEMA)
                 if not isinstance(obj, dict):
                     raise RuntimeError(f"Expected object for {side} row {idx}, got: {type(obj)}")
 
                 player = str(obj.get("player", "")).strip().lower()
-                row_index = int(obj.get("row_index", -999))
                 has_opponents_word = bool(obj.get("has_opponents_word", False))
                 has_mark_word = bool(obj.get("has_mark_word", False))
 
@@ -990,27 +973,19 @@ def extract_rows_by_cropping(
                     or (not has_alpha)
                 )
 
-                # Hard requirement: we must be able to read the tiny printed row index
-                # (1-6) and it must match the player we're extracting. This prevents
-                # accepting cut-off/shifted crops with plausible-but-wrong scores.
-                wrong_index = (row_index != player_num)
-
-                # "opponents" is a strong indicator we're on the wrong sub-row.
-                # "mark" is too flaky (false positives even on clean crops). With the
-                # strict row_index requirement above, we don't need to reject on it.
-                keyword_flags = has_opponents_word
+                # "mark" is too flaky (false positives even on clean crops).
+                # The model's has_opponents_word is also flaky, so we do NOT hard-reject on it;
+                # instead we reject based on player text (e.g., "4v1") and score sanity.
 
                 looks_wrong = (
                     invalid_scores
                     or total_mismatch
                     or hit_keywords
-                    or wrong_index
-                    or keyword_flags
                 )
 
                 if looks_wrong:
                     msg = (
-                        "row_reject side=%s idx=%s attempt=%s player=%r row_index=%s want_index=%s "
+                        "row_reject side=%s idx=%s attempt=%s player=%r "
                         "has_opp=%s has_mark=%s invalid_scores=%s total_mismatch=%s hit_keywords=%s games=%s total=%s"
                     )
                     logger.debug(
@@ -1019,8 +994,6 @@ def extract_rows_by_cropping(
                         idx,
                         attempt + 1,
                         player,
-                        row_index,
-                        player_num,
                         has_opponents_word,
                         has_mark_word,
                         invalid_scores,
@@ -1033,11 +1006,9 @@ def extract_rows_by_cropping(
                     logger.info(
                         "DEBUG " + msg,
                         side,
-                        player_num,
+                        idx,
                         attempt + 1,
                         player,
-                        row_index,
-                        player_num,
                         has_opponents_word,
                         has_mark_word,
                         invalid_scores,
@@ -1048,12 +1019,11 @@ def extract_rows_by_cropping(
                     )
                 else:
                     logger.debug(
-                        "row_accept side=%s idx=%s attempt=%s player=%r row_index=%s games=%s total=%s",
+                        "row_accept side=%s idx=%s attempt=%s player=%r games=%s total=%s",
                         side,
                         idx,
                         attempt + 1,
                         player,
-                        row_index,
                         games,
                         obj.get("total"),
                     )
