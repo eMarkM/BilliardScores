@@ -342,25 +342,33 @@ def _latest_confirmed_upload(con: sqlite3.Connection, ws_s: str, chat_id: int, u
     ).fetchone()
 
 
-def _unconfirm_latest_confirmed_upload(
+def _unconfirm_all_confirmed_uploads(
     con: sqlite3.Connection,
     ws_s: str,
     chat_id: int,
     user_id: int,
-) -> int | None:
-    """Set the most recent CONFIRMED upload back to PENDING (confirmed_at=NULL).
+) -> tuple[int, int | None]:
+    """Set *all* CONFIRMED uploads for the week back to PENDING (confirmed_at=NULL).
 
-    Returns the upload_id that was unconfirmed, or None if no confirmed upload exists.
+    This avoids a confusing state where an older confirmed upload still blocks new
+    photos after /replace.
+
+    Returns: (count_unconfirmed, most_recent_upload_id)
     """
 
     row = _latest_confirmed_upload(con, ws_s, chat_id, user_id)
-    if not row:
-        return None
+    most_recent_id = int(row[0]) if row else None
 
-    upload_id, _created_at, _image_path, _csv_path = row
-    con.execute("UPDATE uploads SET confirmed_at = NULL WHERE id = ?", (upload_id,))
+    cur = con.execute(
+        """
+        UPDATE uploads
+        SET confirmed_at = NULL
+        WHERE week_start = ? AND chat_id = ? AND user_id = ? AND confirmed_at IS NOT NULL
+        """,
+        (ws_s, chat_id, user_id),
+    )
     con.commit()
-    return int(upload_id)
+    return int(cur.rowcount or 0), most_recent_id
 
 
 async def replace_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -378,11 +386,11 @@ async def replace_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     con = _db()
     try:
-        upload_id = _unconfirm_latest_confirmed_upload(con, ws_s, c.id, u.id)
+        count_unconfirmed, most_recent_id = _unconfirm_all_confirmed_uploads(con, ws_s, c.id, u.id)
     finally:
         con.close()
 
-    if not upload_id:
+    if count_unconfirmed == 0:
         await msg.reply_text(
             "No confirmed upload found for this week yet.\n\n"
             "Send a scoresheet photo to start, then /confirm when it looks good."
@@ -390,17 +398,19 @@ async def replace_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     logger.info(
-        "replace_set_pending upload_id=%s week_start=%s chat_id=%s user=%s",
-        upload_id,
+        "replace_set_pending count=%s most_recent_upload_id=%s week_start=%s chat_id=%s user=%s",
+        count_unconfirmed,
+        most_recent_id,
         ws_s,
         c.id,
         _user_label(update),
     )
 
+    which = f" (most recent was #{most_recent_id})" if most_recent_id else ""
     await msg.reply_text(
-        f"OK — I set your confirmed upload (#{upload_id}) back to PENDING.\n\n"
+        f"OK — I set your confirmed upload(s){which} back to PENDING.\n\n"
         "Next:\n"
-        "- If it’s actually correct, run /confirm again\n"
+        "- If the current pending sheet is correct, run /confirm again\n"
         "- Or send a new photo to replace it"
     )
 
