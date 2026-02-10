@@ -55,3 +55,11 @@ Remy Notes
 - Change: pick the header separator line by gridline spacing pattern (short header band followed by taller score band), with a fallback heuristic.
 - Result: extraction now finds 6 rows consistently, but the *content* is still wrong (player names like "chris" and scores badly off expected), indicating the crop geometry is still incorrect and/or the model is reading wrong cells.
 
+## Iteration 6 (model-driven scoreband layout)
+- Implemented a model layout detection call intended to return SCORE-row-only bands (exclude MARK/OPPONENTS).
+- Added guardrails to the prompt and a heuristic fallback to ignore suspicious model layouts.
+- Result: still failing both cases:
+  - Team11vTeam2: visiting row 2 (player 5) often lands on OPPONENTS/WF artifacts.
+  - Team14vTeam9: home row 2 often fails to extract (blank/garbage), suggesting band/crop still off.
+- Net: layout call helps sometimes, but is not reliably producing SCORE-only bands yet.
+
