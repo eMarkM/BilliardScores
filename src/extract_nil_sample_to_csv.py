@@ -427,7 +427,23 @@ def extract_team_numbers(
     client: VisionClient | None = None,
     debug_dir: Path | None = None,
 ) -> Dict[str, int]:
-    img = _load_upright(image_path)
+    vc = client or OpenAIVisionClient()
+
+    img_full = _load_upright(image_path)
+
+    # Try to crop to the boxscore first; full-page photos make the team digits tiny.
+    det = detect_boxscore_bbox(img_full, model=model, client=vc)
+    if det is not None:
+        bbox, rot = det
+        if rot == 180:
+            img_full = img_full.rotate(180, expand=True)
+            det2 = detect_boxscore_bbox(img_full, model=model, client=vc)
+            if det2 is not None:
+                bbox, _ = det2
+        img = img_full.crop(bbox).resize((BASE_W, BASE_H), resample=Image.BILINEAR)
+    else:
+        img = img_full.resize((BASE_W, BASE_H), resample=Image.BILINEAR)
+
     w, h = img.size
 
     # Crop a padded region around each digit and ask the model for the integer.
@@ -462,12 +478,12 @@ def extract_team_numbers(
         try:
             debug_dir.mkdir(parents=True, exist_ok=True)
             (debug_dir / "teams.png").write_bytes(bio.getvalue())
+            img.save(debug_dir / "boxscore_for_teams.png", format="PNG")
         except Exception:
             pass
 
     data_url = _b64_data_url_bytes(bio.getvalue(), "image/png")
 
-    vc = client or OpenAIVisionClient()
     obj = vision_json(vc, prompt, data_url, model=model, schema=TEAM_SCHEMA)
     if not isinstance(obj, dict):
         raise RuntimeError(f"Expected teams object, got: {type(obj)}")
@@ -518,16 +534,19 @@ def detect_boxscore_bbox(
     Returns None if detection fails.
     """
 
-    img_bytes, mime = _img_bytes(img, max_w=1280, fmt="JPEG")
+    # Use a larger max width here because full-page photos make the boxscore table
+    # relatively small; downscaling too much hurts detection.
+    img_bytes, mime = _img_bytes(img, max_w=2000, fmt="JPEG")
     data_url = _b64_data_url_bytes(img_bytes, mime)
 
     prompt = (
-        "Find the main box-score table area on this NIL pool league scoresheet photo. "
+        "Find the main BOXSCORE table area on this NIL pool league scoresheet photo (HOME TEAM table on left + VISITING TEAM table on right). "
+        "Return a TIGHT bounding box that includes the printed headers ('HOME TEAM', 'VISITING TEAM', 'GAME', 'PLAYER', 'TOTAL') and the handwritten score rows. "
+        "Do not include the handicap/legend section below the tables unless it is attached to the boxscore region. "
         "Also determine whether the image is upside-down. "
         "Return STRICT JSON with normalized coordinates between 0 and 1 and a rotation field: "
         "{\"x1\":...,\"y1\":...,\"x2\":...,\"y2\":...,\"rotation\":0|180}. "
-        "rotation=0 means the text reads normally; rotation=180 means the image is upside-down. "
-        "The box should include the player name column(s) and game score columns for both teams."
+        "rotation=0 means the text reads normally; rotation=180 means the image is upside-down."
     )
 
     try:
