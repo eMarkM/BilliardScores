@@ -846,13 +846,18 @@ def extract_rows_by_cropping(
             max_attempts = 20
             player_num = offset + idx
 
-            # The first home row tends to be borderline with the printed header.
-            # Start a touch lower to avoid capturing too much of the header row.
-            if idx == 1:
-                y1n = clamp01(y1n + 0.012)
-                y2n = clamp01(y2n + 0.012)
+            # Search around the initially-detected band. Some full-page photos
+            # shift the detected row bands slightly; if we start too low, scanning
+            # downward will never recover. So we try a few upward offsets first.
+            base_y1n = y1n
+            base_y2n = y2n
+            up_attempts = 6
 
             for attempt in range(max_attempts):
+                # attempt: 0..max_attempts-1; first `up_attempts` go upward.
+                delta = step * (attempt - (up_attempts - 1))
+                y1n = clamp01(base_y1n + delta)
+                y2n = clamp01(base_y2n + delta)
                 logger.info(
                     "DEBUG extract_attempt side=%s player_num=%s attempt=%s",
                     side,
@@ -910,8 +915,6 @@ def extract_rows_by_cropping(
                         attempt + 1,
                         box,
                     )
-                    y1n = clamp01(y1n + step)
-                    y2n = clamp01(y2n + step)
                     continue
 
                 crop_bytes = _img_crop_bytes(img_norm, box, upscale=2)
@@ -1046,9 +1049,7 @@ def extract_rows_by_cropping(
                     last_good_y2n = y2n
                     break
 
-                # Scan downward.
-                y1n = clamp01(y1n + step)
-                y2n = clamp01(y2n + step)
+                # Next attempt is controlled by base_y* + delta; no in-loop drift.
             else:
                 # Could not find a plausible score row band.
                 logger.info(
